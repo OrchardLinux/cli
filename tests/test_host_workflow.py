@@ -57,6 +57,17 @@ class HostWorkflow(unittest.TestCase):
             adapter = Mock(NAME='Supported tablet', PROFILE='device')
             adapter.capture_adt.return_value = b'fresh-adt'
             adapter.prepare_mixin.return_value = (mixin, {'bytes': 12, 'sha256': 'mixin-digest'})
+            import threading
+            downloads_started = threading.Barrier(2)
+            downloads_done = set()
+            def acquire_firmware(*args):
+                downloads_started.wait(timeout=2)
+                downloads_done.add('firmware')
+                return root
+            adapter.firmware_inputs.side_effect = acquire_firmware
+            def boot(*args):
+                self.assertEqual(downloads_done, {'firmware', 'assets'})
+            adapter.boot.side_effect = boot
             @contextmanager
             def connection(device):
                 yield Connection(['authenticated-transport'], SCOPE, lambda: None)
@@ -102,6 +113,10 @@ class HostWorkflow(unittest.TestCase):
             answers = iter(('y', '', *(['format target'] if filesystem == 'unformatted' else []),
                             'install linux', 'y'))
             record = {'release': '1.0', 'assets': {'root': {'bytes': 11, 'sha256': 'root-digest'}}}
+            def acquire_assets(*args, **kwargs):
+                downloads_started.wait(timeout=2)
+                downloads_done.add('assets')
+                return record, {'root': image}
             def check_committed_before_readiness(client, progress):
                 saved = json.loads((private / 'last-install.json').read_text())
                 self.assertTrue(saved['installed'])
@@ -109,7 +124,7 @@ class HostWorkflow(unittest.TestCase):
                 self.assertIsNone(saved['timing']['install_seconds'])
                 return wait_ready(client, progress)
             with patch('orchard_cli.service.choose', return_value=(adapter, {'mode':'dfu', 'location':'opaque', 'ecid':1, 'resumed':False})), \
-                 patch('orchard_cli.service.resolve', return_value=(record, {'root': image})), \
+                 patch('orchard_cli.service.resolve', side_effect=acquire_assets), \
                  patch('orchard_cli.service.Client', return_value=device), \
                  patch('orchard_cli.state.cache_root', return_value=root), \
                  patch('orchard_cli.service.wait_ready', side_effect=check_committed_before_readiness):

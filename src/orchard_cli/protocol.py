@@ -69,13 +69,15 @@ class Client:
             thread.start()
         try:
             if source:
-                self.progress.reset_transfer()
+                if operation != 'prepare':
+                    self.progress.reset_transfer()
                 sent = 0
                 try:
                     for block in iter(lambda: source.read(1048576), b''):
                         process.stdin.write(block)
                         sent += len(block)
-                        self.progress.transfer(sent, size)
+                        if operation != 'prepare':
+                            self.progress.transfer(sent, size)
                     process.stdin.close()
                 except BrokenPipeError:
                     pass  # Read the device's actual failure; never retry the stream.

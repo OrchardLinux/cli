@@ -21,6 +21,7 @@ from orchard_cli.state import operation_lock
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version=version('orchard-cli'))
+    parser.add_argument('--verbose', action='store_true', help='show internal device events')
     commands = parser.add_subparsers(dest='action', required=True)
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
@@ -67,7 +68,7 @@ def main():
             command.add_argument('--destination-identity', type=json.loads, default=None,
                                  help='JSON identity returned by destination inspection')
     args = parser.parse_args()
-    progress = Progress()
+    progress = Progress(verbose=args.verbose)
     try:
         with ExitStack() as stack:
             if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host'):
@@ -150,11 +151,15 @@ def main():
                                                  source=source, size=receipt['bytes'], timeout=1200)
                     else:
                         result = client.call(args.action, request)
-            print(json.dumps(result, indent=2))
+            with progress.lock:
+                progress.end_line()
+            if args.action not in ('install', 'launch') or not sys.stdout.isatty():
+                print(json.dumps(result, indent=2))
     except (ValueError, RuntimeError, OSError, KeyError, subprocess.SubprocessError) as error:
         with progress.lock:
             progress.end_line()
-        parser.exit(1, f'orchard: {error}\n')
+        details = f'\nDiagnostic log: {progress.log_path}' if progress.log_path else ''
+        parser.exit(1, f'orchard: {error}{details}\n')
 
 
 if __name__ == '__main__':

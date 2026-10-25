@@ -37,7 +37,7 @@ def asset(repo, tag, name, progress):
     if not row['browser_download_url'].startswith(f'https://github.com/{repo}/releases/download/{tag}/'):
         raise ValueError('Unexpected GitHub asset URL')
     return materialize({'url': row['browser_download_url'], 'bytes': row['size'],
-                        'sha256': digest[7:]}, None, progress)
+                        'sha256': digest[7:]}, None, progress, label=name.split('_')[0].split('-')[0])
 
 
 def install_tool(source, destination):

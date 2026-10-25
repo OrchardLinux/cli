@@ -7,13 +7,15 @@ import platform
 import shutil
 import subprocess
 import tarfile
+import tempfile
 
 from orchard_cli.cache import cache_root
 from orchard_cli.integrity import digest
-from orchard_cli.http import open_url
+from orchard_cli.releases import materialize
 
 TOOL = {'url': 'https://github.com/blacktop/ipsw/releases/download/v3.1.739/ipsw_3.1.739_macOS_arm64.tar.gz',
-        'sha256': 'c09e8eba02c332f5b50d15f94383e59dd35646d70f6ea9e78d185e9afda6abc2'}
+        'sha256': 'c09e8eba02c332f5b50d15f94383e59dd35646d70f6ea9e78d185e9afda6abc2',
+        'bytes': 28498196}
 
 
 def hcd_from_binary(data, expected):
@@ -55,12 +57,7 @@ def tool(clock, progress):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise ValueError('Firmware extraction requires the ipsw CLI in PATH (or ORCHARD_IPSW_TOOL) on this host')
     directory.mkdir(parents=True, exist_ok=True)
-    archive = directory / 'tool.tar.gz.part'
-    progress.phase('Downloading pinned firmware extraction tool')
-    with clock.exclude('download'), open_url(TOOL['url'], timeout=60) as response, archive.open('wb') as output:
-        shutil.copyfileobj(response, output)
-    if digest(archive) != TOOL['sha256']:
-        raise ValueError('Firmware extraction tool digest differs')
+    archive = materialize(TOOL, None, progress, clock, label='Firmware tool')
     with tarfile.open(archive) as bundle:
         matches = [m for m in bundle if Path(m.name).name == 'ipsw' and m.isfile()]
         if len(matches) != 1:
@@ -68,25 +65,34 @@ def tool(clock, progress):
         executable.write_bytes(bundle.extractfile(matches[0]).read())
     executable.chmod(0o755)
     receipt.write_text(json.dumps({'sha256': digest(executable), 'archive_sha256': TOOL['sha256']}))
-    archive.unlink()
     return str(executable)
+
+
+def run_tool(argv):
+    directory = cache_root() / 'private/diagnostics'
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(prefix='firmware-', suffix='.log', dir=directory, delete=False) as log:
+        try:
+            subprocess.run(argv, check=True, stdout=log, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError('Firmware extraction failed. Diagnostic log: ' + log.name) from error
 
 
 def extract_files(executable, archive, patterns, output):
     for pattern in patterns:
-        subprocess.run([executable, 'extract', '--files', '--pattern', pattern,
-                        '--output', str(output), str(archive)], check=True)
+        run_tool([executable, 'extract', '--files', '--pattern', pattern,
+                  '--output', str(output), str(archive)])
 
 
 def extract_kernel(executable, archive, device, output):
-    subprocess.run([executable, 'extract', '--kernel', '--device', device,
-                    '--output', str(output), str(archive)], check=True)
+    run_tool([executable, 'extract', '--kernel', '--device', device,
+              '--output', str(output), str(archive)])
     candidates = [p for p in output.rglob('kernelcache*') if p.is_file()]
     if len(candidates) != 1:
         raise ValueError('Expected one extracted device kernelcache')
     kernel = candidates[0].read_bytes()
     if kernel[:4] != b'\xcf\xfa\xed\xfe':
         decoded = output / 'kernel.macho'
-        subprocess.run([executable, 'kernel', 'dec', str(candidates[0]), '--output', str(decoded)], check=True)
+        run_tool([executable, 'kernel', 'dec', str(candidates[0]), '--output', str(decoded)])
         kernel = decoded.read_bytes()
     return kernel

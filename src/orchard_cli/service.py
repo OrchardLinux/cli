@@ -1,5 +1,6 @@
 """Guided host workflow. No hardware activation, storage parsing or shell recipes."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import tempfile
@@ -27,7 +28,7 @@ def initialize_partition(client, clock, observation, row, report_path, *, input_
     output('This Linux-data partition has no recognized filesystem signatures; that does not prove it is empty.')
     output('Formatting will permanently destroy any contents of this partition. No backup will be created.')
     phrase = 'format ' + row['id']
-    answer = ask(clock, f'Type "{phrase}" to create ext4 on this partition: ', input_fn)
+    answer = ask(clock, f'Type "{phrase}" to confirm: ', input_fn)
     if answer != phrase:
         raise ValueError('Partition formatting was not confirmed; no storage changes were made')
     request = {'selection_token': observation['selection_token'], 'target': row['id'],
@@ -65,7 +66,9 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
     output('Available Linux-data partitions:')
     for number, row in enumerate(rows, 1):
         free = f" · {row['free_bytes'] / 1024**3:.1f} GiB free" if 'free_bytes' in row else ''
-        output(f"  {number}. {row['label']} · {row['bytes'] / 1024**3:.1f} GiB total{free} · {row['filesystem']} · {row['id']}")
+        output(f"  {number}. {row['label']} · {row['bytes'] / 1024**3:.1f} GiB total{free} · {row['filesystem']}")
+        if len(rows) > 1:
+            output(f"     ID: {row['id']}")
     single = len(rows) == 1
     answer = ask(clock, 'Select partition number [1]: ' if single else 'Select partition number: ', input_fn)
     if single and not answer:
@@ -109,7 +112,7 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
             output('If installation fails, the deleted contents cannot be restored.')
         else:
             phrase = 'install ' + directory
-        confirmation = ask(clock, f'Target {row["id"]}, directory {directory}. Type "{phrase}" to confirm: ', input_fn)
+        confirmation = ask(clock, f'Type "{phrase}" to confirm: ', input_fn)
         if confirmation != phrase:
             raise ValueError('Installation destination was not confirmed')
         return {**request, 'replace': replace, 'destination_identity': existing['identity']}
@@ -206,13 +209,19 @@ def finish_ssh_access(client, adapter: Adapter, status, report, path, clock, inp
 def install(manifest=None, *, input_fn=input, progress=None):
     clock, progress = Clock(), progress or Progress()
     adapter, device = choose()  # Definition of installation timing begins here.
-    answer = ask(clock, f'Installing selected Linux image on {adapter.NAME}. Continue? Y/n ', input_fn)
+    answer = ask(clock, f'Install Linux on {adapter.NAME}? [Y/n] ', input_fn)
     if answer.lower() not in ('', 'y', 'yes'):
         progress.phase('Cancelled; no download or device mutation performed')
         return {'cancelled': True}
     record = assets = None
+    firmware = None
     if not device['resumed']:
-        record, assets = resolve(manifest or default_manifest(adapter.PROFILE), adapter.PROFILE, progress, clock=clock)
+        progress.phase('Downloading installation files')
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            firmware_future = pool.submit(adapter.firmware_inputs, clock, progress.task('Firmware'))
+            record, assets = resolve(manifest or default_manifest(adapter.PROFILE), adapter.PROFILE, progress, clock=clock)
+            firmware = firmware_future.result()
+        progress.phase('Downloads verified; firmware extracted')
         adapter.boot(device, assets, record, progress)
     progress.phase('Waiting for authenticated recovery SSH')
     with adapter.connect(device) as connection:
@@ -239,8 +248,9 @@ def install(manifest=None, *, input_fn=input, progress=None):
             assert assets is not None  # Resolution always supplies record and verified paths together.
             if status['release'] != record['release']:
                 raise ValueError('Running recovery is not the selected release.\n' + adapter.REBOOT_MESSAGE)
-            firmware = adapter.firmware_inputs(clock, progress)
-            progress.phase('Capturing fresh recovery ADT and preparing private mixin')
+            if firmware is None:
+                firmware = adapter.firmware_inputs(clock, progress)
+            progress.phase('Preparing device hardware…')
             adt = work / 'device.adt'
             adt.write_bytes(adapter.capture_adt(device))
             adt.chmod(0o600)
@@ -251,7 +261,7 @@ def install(manifest=None, *, input_fn=input, progress=None):
             root_path = record.get('default_root', '/linux')
             destination = select_destination(client, clock, input_fn=input_fn, directory=root_path.lstrip('/'),
                                              format_report=private / 'last-format.json')
-            progress.phase('Streaming root image; decompression and extraction run concurrently')
+            progress.phase('Installing ' + record.get('name', 'Linux') + '…')
             with assets['root'].open('rb') as source:
                 result = client.call('install', {**destination, **record['assets']['root']},
                                      source=source, size=record['assets']['root']['bytes'], timeout=1200)
@@ -278,8 +288,5 @@ def install(manifest=None, *, input_fn=input, progress=None):
             finish_ssh_access(client, adapter, confirmed, report, path, clock, input_fn, progress,
                               scope=connection.scope)
     save_report(path, report)
-    label = 'Resumed installation' if report['resumed'] else 'Installation'
-    progress.phase(f'System ready. {label}: {timing["install_seconds"]:.1f}s; '
-                   f'downloads: {timing["excluded_seconds"]["download"]:.1f}s; '
-                   f'user input: {timing["excluded_seconds"]["input"]:.1f}s (excluded).')
+    progress.phase(record.get('name', 'Linux') + ' is ready')
     return report

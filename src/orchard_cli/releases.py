@@ -1,6 +1,7 @@
 """Resolve distro, device and boot-method manifests into workflow inputs."""
 from contextlib import nullcontext
-import hashlib
+from concurrent.futures import ThreadPoolExecutor
+import fcntl
 from importlib.metadata import version
 import json
 import os
@@ -13,6 +14,7 @@ except ImportError:
 
 from orchard_hardware import device as hardware_device
 from .cache import cache_root
+from .downloads import download
 from .http import open_url
 from .manifests import ManifestError, check_source, local_file, validate, verify_file
 
@@ -79,7 +81,7 @@ def register(name, source):
     return {'name': name, 'index': location}
 
 
-def materialize(receipt, bundle, progress=None, clock=None):
+def materialize(receipt, bundle, progress=None, clock=None, *, label='Manifest'):
     check_source(receipt, 'asset')
     if 'file' in receipt:
         if bundle is None:
@@ -94,39 +96,25 @@ def materialize(receipt, bundle, progress=None, clock=None):
     local_receipt.pop('url')
     if target.exists() or target.is_symlink():
         return verify_file(local_receipt, folder)
-    if progress:
-        progress.phase('Downloading verified release artifact')
-        progress.reset_transfer()
-    temporary = None
-    try:
+    task = progress.task(label) if progress else None
+    with target.with_suffix('.asset.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if target.exists() or target.is_symlink():
+            return verify_file(local_receipt, folder)
+        partial = target.with_suffix('.download')
+        if task:
+            task.phase('Downloading')
+            task.reset_transfer()
         with (clock.exclude('download') if clock else nullcontext()):
-            with open_url(receipt['url']) as response, tempfile.NamedTemporaryFile(
-                    dir=folder, prefix='.download-', delete=False) as output:
-                temporary = Path(output.name)
-                size, checksum = 0, hashlib.sha256()
-                while True:
-                    block = response.read(min(1048576, receipt['bytes'] - size + 1))
-                    if not block:
-                        break
-                    size += len(block)
-                    if size > receipt['bytes']:
-                        raise ValueError('Download exceeds declared byte count')
-                    checksum.update(block)
-                    output.write(block)
-                    if progress:
-                        progress.transfer(size, receipt['bytes'])
-                if size != receipt['bytes'] or checksum.hexdigest() != receipt['sha256']:
-                    raise ValueError('Downloaded artifact differs from receipt')
-                output.flush()
-                os.fsync(output.fileno())
-            if target.is_symlink():
-                raise ValueError('Linked artifact cache refused')
-            os.replace(temporary, target)
-            temporary = None
+            download(receipt['url'], receipt['bytes'], partial,
+                     progress=(lambda row: task.transfer(row['completed_bytes'], row['total_bytes'])) if task else None)
+        verify_file({**local_receipt, 'file': partial.name}, folder)
+        if target.is_symlink():
+            raise ValueError('Linked artifact cache refused')
+        os.replace(partial, target)
+        if task:
+            task.phase('Verified')
         return target
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def read_document(source, progress=None, clock=None):
@@ -172,7 +160,7 @@ def select_manifest(source, profile, progress=None, clock=None, purpose='install
         receipt = methods[method]
         if receipt['bytes'] > MAX_MANIFEST:
             raise ValueError('Installation manifest exceeds size limit')
-        path = materialize(receipt, bundle, progress, clock)
+        path = materialize(receipt, bundle, None, clock)
         selected, local_bundle = read_document(path, progress, clock)
         if (selected['kind'] != 'orchard.install' or selected['distro'] != document['distro'] or
                 selected['device'] != profile or selected['boot_method'] != method):
@@ -202,12 +190,13 @@ def resolve(manifest, profile, progress=None, clock=None, purpose='install'):
     roles = {'pongo': 'pongo', 'recovery': 'boot'}
     if purpose == 'install':
         roles['root'] = 'root'
-    paths, receipts = {}, {}
-    for role, field in roles.items():
-        if progress:
-            progress.phase('Checking ' + role)
-        receipts[role] = document[field]
-        paths[role] = materialize(document[field], bundle, progress, clock)
+    paths, receipts = {}, {role: document[field] for role, field in roles.items()}
+    labels = {'pongo': 'Pongo', 'recovery': 'Recovery', 'root': document.get('name', 'Linux')}
+    with ThreadPoolExecutor(max_workers=len(roles)) as pool:
+        futures = {role: pool.submit(materialize, receipt, bundle, progress, clock, label=labels[role])
+                   for role, receipt in receipts.items()}
+        for role, future in futures.items():
+            paths[role] = future.result()
     record = {'protocol': document['protocol'], 'profile': profile, 'assets': receipts,
               'release': document.get('version'), 'name': document.get('name', 'Linux'),
               'default_root': document.get('install', {}).get('default_root', '/linux')}

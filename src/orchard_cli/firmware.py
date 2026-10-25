@@ -19,9 +19,12 @@ def ensure_archive(url, size, checksum, archive, clock, progress, *, label):
     if not archive.exists() or archive.stat().st_size != size:
         if shutil.disk_usage(archive.parent).free < 2 * size:
             raise ValueError('Insufficient space for firmware download and extraction')
-        progress.phase(f'Downloading {label} (excluded from install time)')
+        task = progress.task('iPadOS firmware')
+        task.phase('Downloading')
+        task.reset_transfer()
         with clock.exclude('download'):
-            download(url, size, archive)
+            download(url, size, archive,
+                     progress=lambda row: task.transfer(row['completed_bytes'], row['total_bytes']))
     if archive.is_symlink() or digest(archive) != checksum:
         raise ValueError(f'{label} digest differs; retained for inspection')
     return archive

@@ -111,7 +111,9 @@ def download(url, total, destination, workers=4, chunk_size=16*1024*1024, progre
         ready = {}
         next_byte = prefix
         next_report = 0
-        started = time.monotonic()
+        if progress:
+            progress({'assembled_bytes': prefix, 'completed_bytes': prefix,
+                      'total_bytes': total, 'workers': workers, 'chunk_bytes': chunk_size})
         try:
             while pending:
                 done, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
@@ -124,14 +126,10 @@ def download(url, total, destination, workers=4, chunk_size=16*1024*1024, progre
                     next_byte += length
                 if time.monotonic() >= next_report or not pending:
                     received = next_byte + sum(length for _, length in ready.values())
-                    elapsed = time.monotonic()-started
-                    print(f'Assembled {next_byte/total:.1%}; completed {received/total:.1%} '
-                          f'({received/1e9:.2f}/{total/1e9:.2f} GB); '
-                          f'{(received-prefix)/max(elapsed,0.001)/1024**2:.1f} MiB/s average', flush=True)
                     if progress:
                         progress({'assembled_bytes': next_byte, 'completed_bytes': received,
                                   'total_bytes': total, 'workers': workers, 'chunk_bytes': chunk_size})
-                    next_report = time.monotonic()+5
+                    next_report = time.monotonic()+0.2
             if next_byte != total or destination.stat().st_size != total:
                 raise ValueError('Incomplete assembly')
         finally:

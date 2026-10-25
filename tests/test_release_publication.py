@@ -59,8 +59,12 @@ class ReleasePublication(unittest.TestCase):
         def open_url(location, **kwargs):
             requested.append(location)
             return io.BytesIO(payloads[location])
+        def download(location, total, destination, **kwargs):
+            requested.append(location)
+            Path(destination).write_bytes(payloads[location])
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'ORCHARD_HOME': str(Path(directory).resolve())}), \
-             patch.object(releases, 'open_url', side_effect=open_url):
+             patch.object(releases, 'open_url', side_effect=open_url), \
+             patch.object(releases, 'download', side_effect=download):
             releases.register('omarchy-a', url)
             release(1)
             first, _ = releases.resolve('omarchy-a', 'j71b')

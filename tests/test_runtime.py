@@ -98,13 +98,18 @@ class Runtime(unittest.TestCase):
             'https://example.invalid/root': (FIXTURE / 'fixtures/root.tar.gz').read_bytes(),
             'https://example.invalid/boot': (FIXTURE / 'fixtures/boot-stub.txt').read_bytes(),
         }
-        with patch('orchard_cli.releases.open_url', side_effect=lambda url: io.BytesIO(responses[url])) as request:
+        def download(url, total, destination, **kwargs):
+            Path(destination).write_bytes(responses[url])
+        with patch('orchard_cli.releases.open_url', side_effect=lambda url: io.BytesIO(responses[url])) as request, \
+             patch('orchard_cli.releases.download', side_effect=download) as transfer:
             record, assets = releases.resolve('https://example.invalid/index', 'j71b')
             self.assertEqual(record['release'], 'example-1')
-            self.assertEqual(request.call_count, 4) # boot/Pongo identical blob downloads once.
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(transfer.call_count, 3) # manifest and two distinct blobs; shared Pongo downloads once.
             self.assertEqual(assets['root'].read_bytes(), responses['https://example.invalid/root'])
             releases.resolve('https://example.invalid/index', 'j71b')
-            self.assertEqual(request.call_count, 5) # refresh index; immutable files reuse receipts.
+            self.assertEqual(request.call_count, 2) # refresh index; immutable files reuse receipts.
+            self.assertEqual(transfer.call_count, 3)
 
     @unittest.skipUnless(shutil.which('openssl'), 'openssl required for isolated loopback TLS test')
     def test_real_https_stack_downloads_index_manifest_and_assets(self):
@@ -120,7 +125,14 @@ class Runtime(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 data = responses[self.path]
-                self.send_response(200)
+                total = len(data)
+                if self.headers.get('Range'):
+                    start, end = map(int, self.headers['Range'].removeprefix('bytes=').split('-'))
+                    data = data[start:end + 1]
+                    self.send_response(206)
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{total}')
+                else:
+                    self.send_response(200)
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -169,10 +181,12 @@ class Runtime(unittest.TestCase):
                    'sha256': hashlib.sha256(data).hexdigest()}
         for body in (b'short', b'too long by far', b'bad-hash'):
             with self.subTest(body=body):
-                with patch('orchard_cli.releases.open_url', return_value=io.BytesIO(body)):
+                def download(url, total, destination, **kwargs):
+                    Path(destination).write_bytes(body)
+                with patch('orchard_cli.releases.download', side_effect=download):
                     with self.assertRaises(ValueError):
                         releases.materialize(receipt, None)
-                self.assertEqual(list((self.root / 'store/artifacts/sha256').iterdir()), [])
+                self.assertFalse((self.root / 'store/artifacts/sha256' / receipt['sha256']).exists())
 
     def test_corrupt_cached_blob_fails_without_silent_download(self):
         receipt = {'url': 'https://example.invalid/file', 'bytes': 4,

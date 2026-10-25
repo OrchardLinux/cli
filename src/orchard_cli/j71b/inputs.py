@@ -21,7 +21,7 @@ def ensure(clock: Clock, progress: Progress, *, allow_download: bool = True) -> 
     locations = {name: root / ('extra' if name in ('t8010-smartio.bin', 'BCM4355C1-FigaroA-USI.hcd') else 'extracted') / name
                  for name in expected}
     if not missing_inputs(locations, expected):
-        progress.phase('Using verified cached firmware inputs')
+        progress.phase('Verified cached firmware')
         return root
     if not allow_download:
         raise ValueError('Verified private firmware cache is missing. Launch does not download an IPSW by default; '
@@ -30,7 +30,7 @@ def ensure(clock: Clock, progress: Progress, *, allow_download: bool = True) -> 
                              root / 'archive' / (spec['ipsw_sha256'] + '.ipsw'),
                              clock, progress, label='Apple IPSW')
     executable = ipsw.tool(clock, progress)
-    progress.phase('Extracting private firmware inputs')
+    progress.phase('Extracting firmware…')
     with tempfile.TemporaryDirectory(prefix='extract-', dir=root.parent) as directory:
         raw = Path(directory)
         ipsw.extract_files(executable, archive, (*spec['extract_patterns'], 'usr/sbin/BlueTool$'), raw)
