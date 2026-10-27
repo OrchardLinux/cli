@@ -16,7 +16,7 @@ export PATH="$HOME/.local/bin:$PATH"
 orchard setup-host
 ```
 
-The release requirements select compatible CLI and hardware wheels from GitHub, with SHA-256 hashes. Other Python dependencies come from PyPI; the project packages do not require PyPI publication. Rerun these commands to update.
+The release requirements select compatible CLI and hardware wheels from GitHub, with SHA-256 hashes. Other Python dependencies come from PyPI; the project packages do not require PyPI publication. Rerun these commands to update both Orchard and its paired hardware package. If an installation says “Upgrade Orchard to at least …”, rerun the commands above, then retry the installation.
 
 `setup-host` installs missing palera1n and ipsw executables into `~/.local/bin`, leaving existing executables untouched. Linux USB rules are installed with sudo when needed; reconnect the device afterward. It never boots or modifies a device.
 
