@@ -23,15 +23,16 @@ class PackageBoundaries(unittest.TestCase):
     def test_removed_board_local_modules_are_not_shipped(self):
         package=Path(orchard_cli.__file__).parent
         self.assertFalse((package/'apple/adt.py').exists())
-        for name in ('range_download','ssh','usb','linux_usb','adt','adt_tree','adt_capture'):
-            self.assertFalse((package/'j71b'/(name+'.py')).exists(), name)
+        for name in ('range_download','ssh','usb','linux_usb','adt','adt_tree','adt_capture','extract_smartio'):
+            for board in ('j71b', 'j71t'):
+                self.assertFalse((package/board/(name+'.py')).exists(), name)
 
-    def test_shared_imports_and_offline_commands_do_not_import_j71b(self):
+    def test_shared_imports_and_offline_commands_do_not_import_boards(self):
         script = '''
 import importlib.abc, os, sys
 class NoBoard(importlib.abc.MetaPathFinder):
  def find_spec(self, name, path=None, target=None):
-  if name == 'orchard_cli.j71b' or name.startswith('orchard_cli.j71b.'):
+  if name.split('.')[:2] in (['orchard_cli', 'j71b'], ['orchard_cli', 'j71t']):
    raise AssertionError('Offline/common code imported board: '+name)
 sys.meta_path.insert(0, NoBoard())
 from orchard_cli import downloads, firmware, http, integrity

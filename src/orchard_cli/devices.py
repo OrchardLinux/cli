@@ -6,7 +6,7 @@ from orchard_hardware import device as hardware_device
 from .apple.adt_tree import parse
 from .contracts import Adapter, SelectedDevice, UnsupportedDevice
 
-SUPPORTED = ('j71b',)
+SUPPORTED = ('j71b', 'j71t')
 
 
 def load(profile: str) -> Adapter:
