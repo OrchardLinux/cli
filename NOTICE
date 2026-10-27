@@ -5,3 +5,7 @@ framing are informed by Corellium's Project Sandcastle and Paul Praschl's
 (Pauli1Go) makez2fw:
 https://github.com/Pauli1Go/HoolockLinux-linux-firmware
 Reference revision: 944541e67b4c603df328c77d30093551de802c17.
+J71t touch packet selection and ADT calibration copies (j71t/touch.py,
+j71t/calibration.py): GPL-2.0-or-later, from the linux-a9 iPad 5 port
+(https://github.com/brkosebay/linux), which builds on Paul Praschl's
+(Pauli1Go) HoolockLinux A10 work.

@@ -33,7 +33,7 @@ TypedDict records describe the boundary. They do not replace validation of untru
 
 ## Enforcement
 
-The registry checks required member presence, profile identity and presentation metadata without invoking discovery. Python runtime Protocol checks do not verify function signatures; static checking does that. The real J71b module is assigned directly to `Adapter` in `tests/typecheck_adapter.py`, so signature drift is rejected without creating a wrapper implementation.
+The registry checks required member presence, profile identity and presentation metadata without invoking discovery. Python runtime Protocol checks do not verify function signatures; static checking does that. The real J71b and J71t modules are assigned directly to `Adapter` in `tests/typecheck_adapter.py`, so signature drift is rejected without creating a wrapper implementation.
 
 From `cli/`:
 
@@ -41,6 +41,6 @@ From `cli/`:
 uv tool run --from 'mypy==1.18.2' mypy --config-file pyproject.toml
 ```
 
-The development-only checker is declared in the dev dependency group, not runtime dependencies. It targets Python 3.9 and checks the contract, registry, registered implementation and host command/workflow call sites. The wheel includes `py.typed` for consumers of this interface.
+The development-only checker is declared in the dev dependency group, not runtime dependencies. It targets Python 3.9 and checks the contract, registry, registered implementations and host command/workflow call sites. The wheel includes `py.typed` for consumers of this interface.
 
 Unit tests cover conformance/member/profile checks, loader non-mutation and explicit resume state. Existing CLI tests continue covering identity binding, uncertain-outcome/no-retry behavior, private archives, offline imports, source-denied wheel operation and SSH retirement. These contract checks require no physical device.

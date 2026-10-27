@@ -2,6 +2,15 @@
 
 Host-side tools for installing, booting, and debugging Linux on supported Apple devices.
 
+## Supported devices
+
+| Device | Identifier | Profile |
+| --- | --- | --- |
+| iPad 6 Wi-Fi | `iPad7,5` / J71b | `j71b` |
+| iPad 5 Wi-Fi (TSMC) | `iPad6,11` / J71t (S8003) | `j71t` |
+
+The connected device selects its adapter. `orchard devices` lists observations from every adapter; the other iPad 5 Wi-Fi variant, J71s (S8000), is not supported.
+
 ## Install or update
 
 Requires Linux or macOS, Python 3.9+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo, udev, and [apfs-fuse](https://github.com/sgan81/apfs-fuse) with its FUSE runtime for firmware extraction. Install `apfs-fuse` separately and put it in PATH, or set `IPSW_APFS_FUSE_PATH` to its executable. `setup-host` checks for the executable before downloading tools or installing USB rules.
