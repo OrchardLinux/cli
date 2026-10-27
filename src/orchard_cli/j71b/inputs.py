@@ -9,7 +9,7 @@ from orchard_cli.progress import Clock, Progress
 from orchard_cli.firmware import ensure_archive, missing_inputs, store_input
 from orchard_cli.integrity import digest
 from .config import MANIFEST, PROFILE
-from .extract_smartio import extract as smartio
+from orchard_cli.apple.smartio import extract as smartio
 
 
 def ensure(clock: Clock, progress: Progress, *, allow_download: bool = True) -> Path:

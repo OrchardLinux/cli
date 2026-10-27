@@ -5,6 +5,7 @@ import unittest
 from orchard_cli.apple.adt_tree import parse, u32s
 from orchard_cli.apple.macho import macho
 from orchard_cli.apple.osserialize import apple_xml
+from orchard_cli.apple import smartio
 from orchard_cli.j71b import touch
 
 
@@ -51,6 +52,36 @@ class BinaryCodecs(unittest.TestCase):
         for blob in (header[:-1], header + segment[:-1], b'\0' * 32):
             with self.assertRaises(ValueError):
                 macho(blob)
+
+    def test_smartio_firmware_is_selected_by_kext_bundle(self):
+        base, kexts, firmware = 0x10000, (smartio.T8010, smartio.S8000), {}
+        body = bytearray(b'\0' * 256)
+        records = []
+        for index, bundle in enumerate(kexts):
+            header = len(body)
+            data = bytes([index + 1]) * 4096
+            section_offset = header + 32 + 152
+            segment = struct.pack('<II16s4Q4I', 0x19, 152, b'__DATA', 0, 0, 0, 0, 3, 3, 1, 0)
+            section = struct.pack('<16s16sQQ8I', b'__firmware', b'__DATA', base + section_offset,
+                                  len(data), section_offset, 0, 0, 0, 0, 0, 0, 0)
+            body += struct.pack('<8I', 0xfeedfacf, 0, 0, 11, 1, 152, 0, 0) + segment + section + data
+            records.append(f'<dict><key>CFBundleIdentifier</key><string>{bundle}</string>'
+                           f'<key>_PrelinkExecutableLoadAddr</key><integer>{hex(base + header)}</integer></dict>')
+            firmware[bundle] = data
+        info = ('<dict><key>_PrelinkInfoDictionary</key><array>' + ''.join(records) + '</array></dict>').encode()
+        info_offset = len(body)
+        body += info
+        segment = struct.pack('<II16s4Q4I', 0x19, 152, b'__ALL', base, len(body), 0, len(body), 3, 3, 1, 0)
+        section = struct.pack('<16s16sQQ8I', b'__info', b'__PRELINK_INFO', base + info_offset,
+                              len(info), info_offset, 0, 0, 0, 0, 0, 0, 0)
+        outer = struct.pack('<8I', 0xfeedfacf, 0, 0, 2, 1, 152, 0, 0) + segment + section
+        blob = outer + bytes(body[len(outer):])
+        data, report = smartio.extract(blob)
+        self.assertEqual((data, report['kext']), (firmware[smartio.T8010], smartio.T8010))
+        data, report = smartio.extract(blob, smartio.S8000)
+        self.assertEqual((data, report['kext']), (firmware[smartio.S8000], smartio.S8000))
+        with self.assertRaisesRegex(ValueError, 'No unique SmartIO kext'):
+            smartio.extract(blob, 'com.apple.driver.Unknown')
 
     def test_touch_integer_bounds_and_word_encoding(self):
         self.assertEqual(touch.uint('42', 'value'), 42)

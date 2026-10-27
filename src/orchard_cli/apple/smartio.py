@@ -3,7 +3,8 @@
 
 No hardcoded offsets; select the exact kext via its prelink metadata, then map
 its section virtual address through the outer kernel's file-backed segments.
-For MH_FILESET kernels use the upstream ipsw kext extractor instead.
+For MH_FILESET kernels use the upstream ipsw kext extractor instead. The kext
+bundle identifier is the caller's board policy (T8010 by default; S8000 for A9).
 """
 import argparse
 import hashlib
@@ -13,8 +14,11 @@ from pathlib import Path
 from orchard_cli.apple.macho import macho
 from orchard_cli.apple.osserialize import apple_xml
 
+T8010 = 'com.apple.driver.AppleT8010SmartIO'
+S8000 = 'com.apple.driver.AppleS8000SmartIO'
 
-def extract(blob):
+
+def extract(blob, bundle=T8010):
     kind, segments, sections = macho(blob)
     if kind != 2:
         raise ValueError('Expected legacy MH_EXECUTE kernelcache')
@@ -35,7 +39,7 @@ def extract(blob):
     s = info[0]; off = mapped(s['addr'], s['size'])
     metadata = apple_xml(blob[off:off+s['size']])
     kexts = [k for k in metadata['_PrelinkInfoDictionary']
-             if k.get('CFBundleIdentifier') == 'com.apple.driver.AppleT8010SmartIO']
+             if k.get('CFBundleIdentifier') == bundle]
     if len(kexts) != 1:
         raise ValueError('No unique SmartIO kext')
     addr = kexts[0]['_PrelinkExecutableLoadAddr']
@@ -46,7 +50,7 @@ def extract(blob):
         raise ValueError('No unique bounded firmware section')
     f = firmware[0]; offset = mapped(f['addr'], f['size'])
     data = blob[offset:offset+f['size']]
-    report = dict(kext='com.apple.driver.AppleT8010SmartIO', kernel_file_offset=offset,
+    report = dict(kext=bundle, kernel_file_offset=offset,
                   firmware_size=len(data), sha256=hashlib.sha256(data).hexdigest())
     return data, report
 
@@ -55,8 +59,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('kernel', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--bundle', choices=(T8010, S8000), default=T8010)
     args = parser.parse_args()
-    data, report = extract(args.kernel.read_bytes())
+    data, report = extract(args.kernel.read_bytes(), args.bundle)
     # Never silently replace a firmware artifact.
     with args.output.open('xb') as out:
         out.write(data)
