@@ -30,8 +30,13 @@ The default shared cache is `~/.cache/orchard/`, respecting `XDG_CACHE_HOME`;
 directory's `out/`, independently of its name or location.
 
 `orchard run DIRECTORY` verifies the last successful payload, shows the sole
-matching device, asks `Boot this device? [Y/n]`, and uploads once via Pongo. It
-never installs a rootfs, calls a device RPC or claims Linux readiness. It requires
+connected device, asks `Boot this device? [Y/n]`, and uploads once via Pongo.
+A different chip/board or an unknown payload profile produces a plain-language
+warning, not a rejection. The prompt then becomes `Try booting anyway? [y/N]`;
+Enter cancels, while `y` or `yes` attempts the boot. `--yes` prints the warning
+and proceeds without prompting. Upload checks track the connected device's actual
+identity, not the payload's expected chip/board. Exactly one device is still required.
+It never installs a rootfs, calls a device RPC or claims Linux readiness. It requires
 an interactive terminal by default. Use `orchard run DIRECTORY --yes` (or `-y`)
 to explicitly authorize a non-interactive boot without the prompt. This skips
 only confirmation: payload verification, sole-device/identity checks, operation

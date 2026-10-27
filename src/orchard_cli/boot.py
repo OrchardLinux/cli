@@ -10,14 +10,15 @@ import sys
 from .ram import verify_ram
 
 
-def confirm_boot():
+def confirm_boot(*, mismatch=False):
     if not sys.stdin.isatty():
         raise ValueError('Boot confirmation requires an interactive terminal; use --yes for non-interactive RAM boot')
     try:
-        answer = input('Boot this device? [Y/n] ').strip().lower()
+        prompt = 'Try booting anyway? [y/N] ' if mismatch else 'Boot this device? [Y/n] '
+        answer = input(prompt).strip().lower()
     except EOFError:
         raise ValueError('Boot cancelled: input closed') from None
-    if answer not in ('', 'y', 'yes'):
+    if answer not in ('y', 'yes') and not (answer == '' and not mismatch):
         raise ValueError('Boot cancelled')
 
 
@@ -31,22 +32,36 @@ def boot_ram(output, *, yes=False):
 
     output = Path(output).resolve()
     receipt = verify_ram(output)
-    description = hardware_device(receipt['device'])
-    chip, board = (description['match']['dfu'][name] for name in ('chip', 'board'))
+    try:
+        description = hardware_device(receipt['device'])
+    except ValueError:
+        description = None
     with operation_lock():
         device = usb.sole_target()
-        if device['mode'] not in ('dfu', 'pongo') or (device.get('chip'), device.get('board')) != (chip, board):
-            raise ValueError('Requires the matching device in DFU/Pongo; will not reboot running Linux')
+        if device['mode'] not in ('dfu', 'pongo'):
+            raise ValueError('Requires a device in DFU/Pongo; will not reboot running Linux')
+        chip, board = (device.get(name) for name in ('chip', 'board'))
+        mismatch = description is None or any(
+            device.get(name) != description['match']['dfu'][name] for name in ('chip', 'board'))
         ecid = device.get('ecid')
         if not ecid:
             raise ValueError('Missing device ECID')
         executable = shutil.which('palera1n')
         if device['mode'] == 'dfu' and not executable:
             raise ValueError('Install palera1n before booting')
-        print(f'{description["device"]["name"]}, ECID {ecid:x}, USB {device["location"]}, mode {device["mode"]}.')
+        name = description['device']['name'] if not mismatch else device.get('product') or 'Unrecognized device'
+        print(f'{name}, ECID {ecid:x}, USB {device["location"]}, mode {device["mode"]}.')
         print("Experimental RAM boot; the payload's /init determines what runs.")
+        if mismatch:
+            if description is not None:
+                print(f'WARNING: This build was prepared for an {description["device"]["name"]}.')
+                print('Your connected device is different.')
+            else:
+                print('WARNING: The intended device for this build is unknown.')
+                print('Compatibility with your connected device has not been established.')
+            print('It may fail to boot or stop responding until you restart it.')
         if not yes:
-            confirm_boot()
+            confirm_boot(mismatch=mismatch)
         verify_ram(output)
         usb.selected(device['location'], ecid, chip=chip, board=board, mode=device['mode'])
         if device['mode'] == 'dfu':

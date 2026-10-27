@@ -226,7 +226,7 @@ class RamTests(unittest.TestCase):
 
     def test_yes_does_not_bypass_device_checks(self):
         self.build()
-        for changes in ({'mode': 'linux'}, {'chip': 0x8011}, {'board': 0x19}, {'ecid': None}):
+        for changes in ({'mode': 'linux'}, {'ecid': None}):
             device = dict(mode='pongo', chip=0x8010, board=0x18, ecid=123, location='fake')
             device.update(changes)
             with self.subTest(changes=changes), \
@@ -254,6 +254,110 @@ class RamTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, 'Inspect device state'):
             boot.run_directory(self.base, yes=True)
         upload.assert_called_once_with(self.base / 'out', yes=True)
+
+    def test_mismatch_confirmation_defaults_to_no(self):
+        for answer in ('', 'n', 'no'):
+            with self.subTest(answer=answer), patch('sys.stdin.isatty', return_value=True), \
+                    patch('builtins.input', return_value=answer) as prompt, self.assertRaises(ValueError):
+                boot.confirm_boot(mismatch=True)
+            prompt.assert_called_once_with('Try booting anyway? [y/N] ')
+        for answer in ('y', 'YES'):
+            with self.subTest(answer=answer), patch('sys.stdin.isatty', return_value=True), \
+                    patch('builtins.input', return_value=answer):
+                boot.confirm_boot(mismatch=True)
+
+    def test_mismatched_device_can_boot_after_warning(self):
+        self.build()
+        device = dict(mode='pongo', chip=0x8011, board=0x04, ecid=123, location='fake')
+        for yes in (False, True):
+            with self.subTest(yes=yes), \
+                    patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                    patch('orchard_cli.apple.usb.selected') as selected, \
+                    patch('orchard_cli.transports.pongo.upload') as upload, \
+                    patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                    patch('sys.stdin.isatty', return_value=not yes), \
+                    patch('builtins.input', return_value='yes') as prompt, \
+                    patch('builtins.print') as output:
+                boot.boot_ram(self.output, yes=yes)
+            if yes:
+                prompt.assert_not_called()
+            else:
+                prompt.assert_called_once_with('Try booting anyway? [y/N] ')
+            self.assertIn('This build was prepared for an iPad 6 (Wi-Fi)', str(output.call_args_list))
+            self.assertIn('Your connected device is different.', str(output.call_args_list))
+            self.assertIn('until you restart it', str(output.call_args_list))
+            self.assertEqual(selected.call_count, 2)
+            selected.assert_any_call('fake', 123, chip=0x8011, board=0x04, mode='pongo')
+            selected.assert_any_call('fake', 123, chip=0x8011, board=0x04)
+            upload.assert_called_once()
+
+    def test_unknown_payload_profile_warns_but_can_boot(self):
+        self.build()
+        path = self.output / 'build.json'
+        receipt = json.loads(path.read_text())
+        receipt['device'] = 'experimental-unregistered-board'
+        path.write_text(json.dumps(receipt))
+        device = dict(mode='pongo', chip=0x8011, board=0x04, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                patch('orchard_cli.apple.usb.selected'), \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                patch('builtins.input', side_effect=AssertionError('unexpected prompt')), \
+                patch('builtins.print') as output:
+            boot.boot_ram(self.output, yes=True)
+        self.assertIn('intended device for this build is unknown', str(output.call_args_list))
+        upload.assert_called_once()
+
+    def test_mismatched_dfu_boot_tracks_actual_device_through_pongo(self):
+        self.build()
+        device = dict(mode='dfu', chip=0x8011, board=0x04, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                patch('orchard_cli.apple.usb.selected') as selected, \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                patch('orchard_cli.apple.boot.wait_mode') as wait, \
+                patch.object(boot.shutil, 'which', return_value='/fake/palera1n'), \
+                patch.object(boot.subprocess, 'run') as execute:
+            boot.boot_ram(self.output, yes=True)
+        selected.assert_any_call('fake', 123, chip=0x8011, board=0x04, mode='dfu')
+        selected.assert_any_call('fake', 123, chip=0x8011, board=0x04)
+        wait.assert_called_once_with(device, 'pongo', chip=0x8011, board=0x04, product='', seconds=60)
+        execute.assert_called_once()
+        upload.assert_called_once()
+
+    def test_mismatch_refusal_stops_before_usb_mutation(self):
+        self.build()
+        device = dict(mode='pongo', chip=0x8011, board=0x04, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                patch('orchard_cli.apple.usb.selected') as selected, \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                patch('sys.stdin.isatty', return_value=True), \
+                patch('builtins.input', return_value=''), self.assertRaises(ValueError):
+            boot.boot_ram(self.output)
+        selected.assert_not_called()
+        upload.assert_not_called()
+
+    def test_yes_still_requires_exactly_one_device(self):
+        self.build()
+        device = dict(mode='pongo', chip=0x8011, board=0x04, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.devices', return_value=[device, dict(device, ecid=456)]), \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                self.assertRaisesRegex(ValueError, 'exactly one'):
+            boot.boot_ram(self.output, yes=True)
+        upload.assert_not_called()
+
+    def test_mismatched_device_identity_change_still_stops_upload(self):
+        self.build()
+        device = dict(mode='pongo', chip=0x8011, board=0x04, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                patch('orchard_cli.apple.usb.selected', side_effect=ValueError('Wrong device identity')), \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                self.assertRaisesRegex(ValueError, 'Wrong device identity'):
+            boot.boot_ram(self.output, yes=True)
+        upload.assert_not_called()
 
     def test_directory_content_builds_without_python_recipes(self):
         example = self.base / 'example'
