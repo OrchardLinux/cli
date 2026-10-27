@@ -1,6 +1,7 @@
 """Cross-checkout reuse with real local Git and mocked compiler recipes."""
 from contextlib import redirect_stdout
 import io
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -134,6 +135,52 @@ class SharedBuildCacheTests(unittest.TestCase):
         self.assertIn('Reusing kernel-j71b:', second_log.getvalue())
         self.assertNotIn('Building ', second_log.getvalue())
         self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
+
+    def legacy_key(self, helper):
+        # Historical formula, kept independent of the new producer fingerprint.
+        recipes = build.recipe_key(self.one, [
+            'kernel/upstream.lock', 'kernel/configs/j71b', 'kernel/patches/j71b',
+            'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
+            'kernel/stage-modules.py', 'buildenv.py',
+        ])
+        sdk = build.digest(Path(build.__file__).with_name('kernel_sdk.py'))
+        tree = kernel.source_tree(self.one, self.cache, 'j71b')
+        mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
+        return hashlib.sha256((recipes + helper + sdk + tree + mode).encode()).hexdigest()
+
+    def seed_legacy_bundle(self, helper):
+        key = self.legacy_key(helper)
+        components = self.cache / 'components-v2'
+        base = build.cached_component(components, 'kernel-base-j71b', lambda: key,
+            lambda stage: self.produce(self.one, self.cache, 'j71b', stage / 'kernel')) / 'kernel'
+        final_key = build.kernel_key(self.one, 'j71b', key)
+        final = build.cached_component(components, 'kernel-j71b', lambda: final_key,
+            lambda stage: self.produce(self.one, self.cache, 'j71b', stage / 'kernel', base)) / 'kernel'
+        return key, base, final
+
+    def test_old_canonical_and_worker_cache_bundles_survive_source_helper_changes(self):
+        for helper in build._BASE_V1_HELPERS:
+            with self.subTest(helper=helper):
+                key, base, final = self.seed_legacy_bundle(helper)
+                with patch.object(kernel, 'build_base', side_effect=AssertionError('Linux rebuilt')), \
+                        patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')), \
+                        patch.object(sources, 'checkout', side_effect=AssertionError('source checked out')):
+                    self.assertEqual(build.kernel_base_key(self.two, 'j71b', self.cache), key)
+                    self.assertEqual(build.prepare_kernel(self.two, self.cache), final)
+                self.assertFalse((self.two / 'kernel/.work').exists())
+                shutil.rmtree(self.cache / 'components-v2')
+
+    def test_legacy_cache_is_not_reused_when_base_producer_changes(self):
+        key, _, _ = self.seed_legacy_bundle(build._BASE_V1_HELPERS[0])
+        with patch.object(build.inspect, 'getsource', return_value='changed base producer\n'):
+            self.assertNotEqual(build.kernel_base_key(self.two, 'j71b', self.cache), key)
+
+    def test_reused_legacy_cache_is_still_hash_verified(self):
+        _, base, _ = self.seed_legacy_bundle(build._BASE_V1_HELPERS[0])
+        (base / 'Image.gz').write_bytes(b'corrupted')
+        with patch.object(kernel, 'build_base', side_effect=AssertionError('silently rebuilt')), \
+                self.assertRaisesRegex(ValueError, 'Cached component changed'):
+            build.prepare_kernel(self.two, self.cache)
 
     def test_missing_recipe_fails_before_any_checkout_or_producer(self):
         with patch.object(sources, 'checkout', side_effect=AssertionError('checked out source')), \

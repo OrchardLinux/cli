@@ -6,6 +6,7 @@ policy or device access. The hardware/CLI ownership boundary remains provisional
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -21,6 +22,16 @@ except ImportError:
     import tomli as tomllib
 
 from . import sources, kernel as kernels
+
+_BASE_PRODUCER = kernels.build_base
+# These two old helper modules had the identical base producer below. Their
+# whole-file hashes must remain usable, without making future source-management
+# fixes invalidate compiled kernels. Never reuse them for a changed producer.
+_BASE_V1_PRODUCER = '2404aef309585cb74a49439f7a2df6b1bcb0f24578f765f69ef03f93abab2ec0'
+_BASE_V1_HELPERS = (
+    '01be4f9189af3896c6acdd71b6309a5244d9585d1ff742daaf57dcfd04bc9fe2',
+    'bbe7c3d2431a2069c93cf80d4f942b5f463824adcf2da72516a23721957140f5',
+)
 
 
 def configured_device(directory):
@@ -81,24 +92,32 @@ def cache_root():
 
 def kernel_base_key(hardware, device, cache):
     """Same key before and after source checkout; external modules are separate."""
-    pin = dict(line.split('=', 1) for line in (hardware / 'kernel/upstream.lock').read_text().splitlines()
-               if '=' in line)
-    source = hardware / 'kernel/.work' / device / 'source'
-    patches = sorted((hardware / 'kernel/patches' / device).glob('*.patch'))
-    declared = sources.declared_tree(pin['url'], pin['commit'], patches, cache=cache, donor=source)
-    tree = sources.working_tree(source) if (source / '.git').exists() else declared
-    if (source / '.git').exists() and sources.git(source, 'rev-parse', 'HEAD').decode() != pin['commit']:
-        raise ValueError('Local kernel HEAD differs from upstream.lock; will not reset it')
+    tree = kernels.source_tree(hardware, cache, device)
     recipes = recipe_key(hardware, [
         'kernel/upstream.lock', 'kernel/configs/' + device, 'kernel/patches/' + device,
         'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
         'kernel/stage-modules.py', 'buildenv.py',
     ])
-    # CLI owns source preparation/SDK composition. Include those implementations
-    # in the base identity rather than requiring new hardware package contents.
-    recipes += digest(Path(kernels.__file__)) + digest(Path(__file__).with_name('kernel_sdk.py'))
+    # Source preparation is already represented by its resulting tree. Hash
+    # only the binary/SDK producer, not unrelated functions in kernel.py.
+    producer = hashlib.sha256(inspect.getsource(_BASE_PRODUCER).encode()).hexdigest()
+    helpers = (producer, *_BASE_V1_HELPERS) if producer == _BASE_V1_PRODUCER else (producer,)
+    sdk = digest(Path(__file__).with_name('kernel_sdk.py'))
     mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
-    return hashlib.sha256((recipes + tree + mode).encode()).hexdigest()
+    keys = [hashlib.sha256((recipes + helper + sdk + tree + mode).encode()).hexdigest()
+            for helper in helpers]
+    components = Path(cache) / 'components-v2'
+    # Prefer a complete matching bundle, then a matching compiled base. Normal
+    # cached_component validation still verifies every reused file's hash.
+    for key in keys:
+        base = components / ('kernel-base-' + device) / key
+        final = components / ('kernel-' + device) / kernel_key(hardware, device, key)
+        if (base / 'component.json').is_file() and (final / 'component.json').is_file():
+            return key
+    for key in keys:
+        if (components / ('kernel-base-' + device) / key / 'component.json').is_file():
+            return key
+    return keys[0]
 
 
 def kernel_key(hardware, device, base_key):

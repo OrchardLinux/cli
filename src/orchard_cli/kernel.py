@@ -25,6 +25,46 @@ def work_directory(hardware, device):
     return Path(hardware) / 'kernel/.work' / device
 
 
+def patch_identity(hardware, device):
+    patches = sorted((Path(hardware) / 'kernel/patches' / device).glob('*.patch'))
+    marker = b''.join(subprocess.check_output(['git', 'hash-object', str(p)]).strip() +
+                      b' ' + p.name.encode() + b'\n' for p in patches)
+    return patches, marker
+
+
+def source_tree(hardware, cache, device):
+    """Resolve the requested tree before cache lookup, without changing source.
+
+    A clean checkout of an older managed patch set must not poison the new
+    content-addressed key. Local edits still participate, or block a patch
+    transition when they cannot be separated safely.
+    """
+    selected = pin(hardware)
+    work = work_directory(hardware, device)
+    source = work / 'source'
+    patches, expected = patch_identity(hardware, device)
+    declared = sources.declared_tree(selected['url'], selected['commit'], patches,
+                                     cache=cache, donor=source)
+    if not (source / '.git').exists():
+        return declared
+    if (sources.git(source, 'rev-parse', 'HEAD').decode() != selected['commit'] or
+            sources.git(source, 'remote', 'get-url', 'origin').decode() != selected['url']):
+        raise ValueError('Local kernel revision/remote differs from upstream.lock; sources were not reset')
+    current = sources.working_tree(source)
+    marker = work / 'applied-patches'
+    baseline = work / 'prepared-tree'
+    if marker.exists() and marker.read_bytes() != expected:
+        if current == declared or (baseline.exists() and current == baseline.read_text().strip()):
+            return declared
+        raise ValueError('Kernel patches changed with local edits or an unrecorded baseline; '
+                         'refusing to discard edits or select an unrelated cached kernel')
+    if marker.exists() and current == declared and not baseline.exists():
+        # Upgrade legacy metadata on a verified clean cache hit, without
+        # touching source/index/compiler output or invoking a producer.
+        baseline.write_text(declared + '\n')
+    return current
+
+
 def prepare_source(hardware, cache, device):
     hardware = Path(hardware)
     selected = pin(hardware)
@@ -37,13 +77,31 @@ def prepare_source(hardware, cache, device):
     if (sources.git(source, 'rev-parse', 'HEAD').decode() != selected['commit'] or
             sources.git(source, 'remote', 'get-url', 'origin').decode() != selected['url']):
         raise ValueError('Local kernel revision/remote differs from upstream.lock; sources were not reset')
-    patches = sorted((hardware / 'kernel/patches' / device).glob('*.patch'))
-    expected = b''.join(subprocess.check_output(['git', 'hash-object', str(p)]).strip() +
-                        b' ' + p.name.encode() + b'\n' for p in patches)
+    patches, expected = patch_identity(hardware, device)
     marker = work / 'applied-patches'
+    baseline = work / 'prepared-tree'
+    declared = sources.declared_tree(selected['url'], selected['commit'], patches,
+                                     cache=cache, donor=source)
     if marker.exists():
         if marker.read_bytes() != expected:
-            raise ValueError('Kernel patch set changed; use a fresh work directory; local edits were not reset')
+            # source_tree rejects ambiguous/dirty transitions before any write.
+            desired = source_tree(hardware, cache, device)
+            current = sources.working_tree(source)
+            if current != desired:
+                with sources.repository(selected['url'], selected['commit'], cache=cache) as bare:
+                    # Patch bytes are not text identifiers: stripping their
+                    # trailing whitespace corrupts blank context/binary data.
+                    delta = subprocess.check_output(
+                        ['git', '-C', str(bare), 'diff', '--binary', current, desired],
+                        stderr=subprocess.PIPE)
+                for flags in (['--check'], []):
+                    subprocess.run(['git', '-C', str(source), 'apply', *flags, '-'],
+                                   input=delta, check=True)
+                if sources.working_tree(source) != desired:
+                    raise ValueError('Kernel patch transition verification failed; compiler not started')
+            # Retain compiler objects and unchanged source mtimes for make.
+            marker.write_bytes(expected)
+            baseline.write_text(declared + '\n')
     else:
         for patch in patches:
             try:
@@ -52,6 +110,10 @@ def prepare_source(hardware, cache, device):
                 sources.git(source, 'apply', '--check', patch)
                 sources.git(source, 'apply', patch)
         marker.write_bytes(expected)
+        baseline.write_text(declared + '\n')
+    # Safely migrate an older workspace only when its source is exactly declared.
+    if sources.working_tree(source) == declared:
+        baseline.write_text(declared + '\n')
     return source, work / 'output'
 
 

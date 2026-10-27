@@ -118,10 +118,17 @@ store locally rather than redownloading Linux.
 
 `init` and rootfs files are assembly inputs, not kernel inputs. Toolchain containers
 still use the host's configured Podman connection; no VM management is introduced.
-Hardware producers and their patch-resume rules are unchanged. CLI prepares
-sources at their existing ignored scratch locations to preserve local edits and
-compiler output. The first build after the ownership correction repopulates the
-base cache; existing artifacts/compiler state are not deleted.
+When patches change, CLI checks the shared cache against the newly declared
+source tree before changing the local checkout. On a miss, it applies the verified
+delta from a recorded clean baseline, retaining the index, unchanged source
+mtimes and compiler output. Local edits or an unknown baseline stop that transition
+without resetting the checkout. Hardware receives the matching patch marker.
+
+Kernel-base keys fingerprint the base producer and SDK exporter, not unrelated
+source-management functions. Verified caches from the two earlier equivalent
+base producers remain reusable, including the charging-worker cache. A changed
+base producer does not inherit that compatibility. Cache reuse still checks the
+complete file inventory and hashes.
 
 Developer receipts are not publisher signatures or hardware qualification.
 Explicit component paths are trusted inputs: callers must keep kernel, DTB and
