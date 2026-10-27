@@ -21,7 +21,7 @@ python -m pip install --upgrade pip build
 python -m build --wheel
 ```
 
-Build hardware first, then CLI. Wheel versions come from each repository's `pyproject.toml`. The current pair is CLI `0.1.8` and hardware `0.1.9`.
+Build hardware first, then CLI. Wheel versions come from each repository's `pyproject.toml`. The release pair prepared here is CLI `0.1.10` and hardware `0.1.10`. It includes the expanded J71b Wi-Fi firmware recipe; consuming images must require Orchard `0.1.10` or newer.
 
 ## Prepare assets locally
 
@@ -29,9 +29,9 @@ From the CLI repository, pass explicit paths to both wheels:
 
 ```sh
 python tools/prepare_release.py \
-  --cli-wheel dist/orchard_cli-0.1.8-py3-none-any.whl \
-  --hardware-wheel /path/to/orchard_hardware-0.1.9-py3-none-any.whl \
-  --output out/publication/host-0.1.8
+  --cli-wheel dist/orchard_cli-0.1.10-py3-none-any.whl \
+  --hardware-wheel /path/to/orchard_hardware-0.1.10-py3-none-any.whl \
+  --output out/publication/host-0.1.10
 ```
 
 Use the actual wheel filenames for later versions. The tool reads their metadata and computes hashes. Output must be a new directory:
@@ -44,8 +44,8 @@ Before publishing, install the pair into a fresh virtual environment, run `pytho
 ```sh
 python3 -m venv out/release-test
 out/release-test/bin/python -m pip install --only-binary=:all: \
-  dist/orchard_cli-0.1.8-py3-none-any.whl \
-  /path/to/orchard_hardware-0.1.9-py3-none-any.whl
+  dist/orchard_cli-0.1.10-py3-none-any.whl \
+  /path/to/orchard_hardware-0.1.10-py3-none-any.whl
 out/release-test/bin/python -m pip check
 PYTHONDONTWRITEBYTECODE=1 out/release-test/bin/python -m unittest discover -s tests -v
 out/release-test/bin/orchard resolve tests/fixtures/first/index.toml
@@ -55,11 +55,12 @@ Also run the hardware tests from its own repository using the same installed whe
 
 ## Publish in dependency order
 
-1. Upload the hardware wheel to its matching hardware release tag.
-2. Publish its [shared launcher manifest and assets](https://github.com/OrchardLinux/hardware/blob/main/boot/quiet/README.md). The default `orchard launch` command requires these, not only the wheel.
-3. Upload the CLI wheel and generated `requirements.txt` to its matching CLI release tag.
-4. Mark complete hardware and CLI releases as latest so their `latest/download` URLs work.
-5. Resolve the hosted distro index and qualify installation and cold-restart launch on supported hardware before announcing the release.
+1. Publish the hardware wheel/components at their immutable tag; retain the previous complete hardware release as latest.
+2. Publish the matching CLI wheel and generated `requirements.txt` at their immutable tag.
+3. Build consuming distro images with that exact pair and the new minimum CLI version. Keep them out of latest until their launcher is available.
+4. Publish the hardware release's [shared launcher manifest and assets](https://github.com/OrchardLinux/hardware/blob/main/boot/quiet/README.md), using those exact distro roots. The default `orchard launch` command requires these, not only the wheel.
+5. Promote the complete hardware, compatible CLI and distro releases to latest in that order. Their `latest/download` URLs must remain usable throughout.
+6. Resolve the hosted distro index and qualify installation and cold-restart launch on supported hardware before announcing the release.
 
 See Omarchy A's release instructions for distro assets. Local preparation does not upload assets or operate a device.
 
