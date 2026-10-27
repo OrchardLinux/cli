@@ -2,7 +2,7 @@
 from contextlib import AbstractContextManager
 from typing import Any, Dict, List, Optional, cast
 
-from orchard_cli.contracts import BootAssets, BootRequest, Connection, SelectedDevice
+from orchard_cli.contracts import BootAssets, BootRequest, Connection, SelectedDevice, UnsupportedDevice
 from orchard_cli.state import BootState, DeviceState, EndpointUnavailable
 from orchard_cli.progress import Progress
 from orchard_cli.apple import usb, boot as apple_boot, adt_capture
@@ -63,10 +63,14 @@ def discover() -> SelectedDevice:
     except EndpointUnavailable as error:
         raise ValueError(str(error)) from error
     if device['mode'] == 'linux':
+        if device.get('product') != PRODUCT:
+            raise UnsupportedDevice('Connected recovery is not for iPad 6 (Wi-Fi), J71b')
         endpoint = recovery_endpoint()
         BootState(DeviceState(PROFILE, endpoint['ecid']), endpoint['boot_id'])
         return cast(SelectedDevice, {**endpoint, 'resumed': True})
-    if (device['chip'], device['board']) != (CHIP, BOARD) or not device['ecid']:
+    if (device['chip'], device['board']) != (CHIP, BOARD):
+        raise UnsupportedDevice('Unsupported device; only iPad 6 (Wi-Fi), J71b is supported')
+    if not device['ecid']:
         raise ValueError('Unsupported device; only iPad 6 (Wi-Fi), J71b is supported')
     DeviceState(PROFILE, device['ecid'])
     return cast(SelectedDevice, {**device, 'resumed': False})

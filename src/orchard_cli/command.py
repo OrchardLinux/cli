@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 from importlib.metadata import version
-from orchard_cli.devices import load, choose
+from orchard_cli.devices import SUPPORTED, load, choose, list_devices, profile_for_adt
 from orchard_cli.progress import Progress
 from orchard_cli.protocol import Client
 from orchard_cli.releases import resolve, catalogue, register
@@ -36,7 +36,7 @@ def main():
     distros.add_argument('source', nargs='?')
     check = commands.add_parser('resolve', help='verify inputs without accessing a device')
     check.add_argument('source')
-    check.add_argument('--profile', default='j71b')
+    check.add_argument('--profile', default='j71b', choices=SUPPORTED)
     check.add_argument('--boot', action='store_true', help='resolve only boot assets')
     commands.add_parser('devices', help='list USB devices without modifying them')
     commands.add_parser('setup-host', help='install missing boot tools and Linux USB permissions; no device access')
@@ -51,6 +51,7 @@ def main():
     mixin = commands.add_parser('mixin', help='prepare a data-only private mixin')
     for name in ('adt', 'firmware-dir', 'output'):
         mixin.add_argument('--' + name, type=Path, required=True)
+    mixin.add_argument('--profile', choices=SUPPORTED, help='device profile (default: selected from the ADT model)')
     for action in ('status', 'diagnostics', 'targets', 'destination', 'prepare', 'install-root', 'handoff', 'abort'):
         command = commands.add_parser(action, help='invoke the device-owned ' + action + ' operation')
         command.add_argument('--recovery', action='store_true', help='provision access through the recovery serial shell')
@@ -90,7 +91,7 @@ def main():
                 record, assets = resolve(args.source, args.profile, progress, purpose='boot' if args.boot else 'install')
                 result = {'manifest': record, 'files': {key: str(path) for key, path in assets.items()}}
             elif args.action == 'devices':
-                result = load().list_devices()
+                result = list_devices()
             elif args.action == 'setup-host':
                 from orchard_cli.host_setup import setup
                 result = setup(progress)
@@ -124,7 +125,7 @@ def main():
                     stream.write(data)
                 result = {'saved': str(args.output), 'bytes': len(data)}
             elif args.action == 'mixin':
-                adapter = load()
+                adapter = load(args.profile or profile_for_adt(args.adt.read_bytes()))
                 archive, result = adapter.prepare_mixin(args.adt, args.firmware_dir, args.output)
                 result = {**result, 'path': str(archive)}
             else:

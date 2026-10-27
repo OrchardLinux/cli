@@ -7,8 +7,8 @@
 | Member | Contract and effects |
 | --- | --- |
 | `PROFILE`, `NAME`, `REBOOT_MESSAGE` | Registered profile key, human-readable name and fresh-boot instructions. The profile must match its registry entry. |
-| `list_devices()` | Raw discovery observations for display; read-only, no boot/preparation or implicit adapter selection. Vendor-specific observation fields are not interpreted by the common workflow. |
-| `discover()` | Read-only identification of exactly one supported device. Return a validated `SelectedDevice`; raise `ValueError` when no unique supported device is available. |
+| `list_devices()` | Raw discovery observations for display; read-only, no boot/preparation or implicit adapter selection. Vendor-specific observation fields are not interpreted by the common workflow. `orchard devices` merges every registered adapter's observations without duplicates. |
+| `discover()` | Read-only identification of exactly one supported device. Return a validated `SelectedDevice`; raise `UnsupportedDevice` (a `ValueError`) when the connected target is another model, and `ValueError` when no unique supported device is available. |
 | `boot(device, assets, manifest, progress)` | Enter recovery using already-verified boot artifacts. A resumed recovery is not rebooted/uploaded. Keep identity/port checks and timeout budgets; never retry an uncertain mutation. |
 | `connect(device)` | Context-managed serial bootstrap and pinned SSH access bound to the selected ECID/boot. No host-side device storage/service recipes. |
 | `connect_saved(device)` | Context-managed use of the selected device/boot's retained pinned credentials. Never reprovision credentials or drive a login prompt. |
@@ -16,6 +16,8 @@
 | `capture_adt(device=None)` | Fresh, bounded, private Apple ADT capture for this adapter's model. When supplied, bind the confirmed device selection to the captured identity. Do not log or implicitly retain the raw tree. |
 | `firmware_inputs(clock, progress)` | Return verified cached/acquired host firmware inputs; account download time separately. No device hardware or storage mutation. |
 | `prepare_mixin(adt, firmware_dir, outdir)` | Return `(Path, MixinReceipt)` for a private data-only archive bound to the selected device/recipe. Preserve firmware hash, containment, calibration and output guards. |
+
+`devices.choose()` tries every registered adapter. Exactly one adapter must return a selection; `UnsupportedDevice` refusals are not errors, identical shared USB errors are reported once, and a target that no adapter supports is reported with the list of supported devices. `orchard mixin` selects the profile whose hardware descriptor lists the ADT's `model`, or takes an explicit `--profile`; the adapter still validates the ADT itself.
 
 Arguments and return types are defined in `contracts.py`, not repeated in a second runtime schema. Image-facing protocol validation, manifest validation and hardware identity verification remain in their existing owners.
 

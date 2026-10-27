@@ -59,6 +59,14 @@ class MixinReceipt(TypedDict):
     sha256: str
 
 
+class UnsupportedDevice(ValueError):
+    """discover() identified a connected target that this adapter does not support.
+
+    The registry tries every adapter; this refusal lets another adapter claim the
+    target instead of reporting an error. Other ValueErrors remain errors.
+    """
+
+
 @dataclass(frozen=True)
 class Connection:
     argv: List[str]
@@ -71,7 +79,8 @@ class Adapter(Protocol):
     """Required interface of a registered adapter module.
 
     Discovery is read-only and raises ValueError when no unique supported device
-    is present. Boot must never retry uncertain mutations. connect(device) binds
+    is present; UnsupportedDevice when the target is another model. Boot must
+    never retry uncertain mutations. connect(device) binds
     the selected ECID/boot; connect_saved(device) must never reprovision.
     Exceptions propagate: the host owns confirmation/reporting, not recovery
     recipes. There are no optional members or legacy fallbacks.
