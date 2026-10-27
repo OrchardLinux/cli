@@ -33,6 +33,7 @@ class SharedBuildCacheTests(unittest.TestCase):
                 'kernel/stage-modules.py': 'stage',
                 'kernel/configs/j71b/config': 'config',
                 'kernel/devicetree/j71b/overlay': 'dtb',
+                'kernel/devicetree/j71b/build': 'dtb producer',
                 'kernel/modules/j71b/power/driver.c': 'external driver',
                 'kernel/upstream.lock': f'url={self.upstream.as_uri()}\ncommit={self.commit}\n',
             }.items():
@@ -133,6 +134,13 @@ class SharedBuildCacheTests(unittest.TestCase):
         self.assertIn('Reusing kernel-j71b:', second_log.getvalue())
         self.assertNotIn('Building ', second_log.getvalue())
         self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
+
+    def test_missing_recipe_fails_before_any_checkout_or_producer(self):
+        with patch.object(sources, 'checkout', side_effect=AssertionError('checked out source')), \
+                patch.object(build, 'command', side_effect=AssertionError('started producer')), \
+                self.assertRaisesRegex(ValueError, 'Missing hardware recipe input'):
+            build.prepare_components(self.one, self.cache, device='new-board')
+        self.assertFalse(self.cache.exists())
 
     def test_external_driver_change_reuses_kernel_base_and_sdk(self):
         first = self.prepare(self.one)

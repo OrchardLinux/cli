@@ -26,6 +26,7 @@ def main():
     build = commands.add_parser('build', help='build DIRECTORY/init and optional DIRECTORY/rootfs into a RAM payload')
     build.add_argument('directory', type=Path, help='any directory containing init and optional rootfs/')
     build.add_argument('--hardware', type=Path, help='override the active orchard-hardware package resources')
+    build.add_argument('--device', help='override the default recipe selected by orchard.toml')
     build.add_argument('--cache', type=Path, help='override the shared component cache')
     build.add_argument('--kernel-dir', type=Path, help='reuse a staged kernel/DTB/module tree')
     for component in ('pongo', 'busybox', 'loader'):
@@ -86,7 +87,7 @@ def main():
             from orchard_cli.ram import build_directory
             build_directory(args.directory, hardware=args.hardware, cache=args.cache,
                             kernel=args.kernel_dir, busybox=args.busybox, loader=args.loader,
-                            pongo=args.pongo, modules=args.modules)
+                            pongo=args.pongo, modules=args.modules, device=args.device)
             return
         if args.action == 'run':
             from orchard_cli.boot import run_directory

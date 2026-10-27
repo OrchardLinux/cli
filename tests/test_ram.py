@@ -177,7 +177,7 @@ class RamTests(unittest.TestCase):
                 patch('orchard_cli.command.operation_lock') as lock:
             main()
             build.assert_called_once_with(self.base, hardware=None, cache=None, kernel=None,
-                                          busybox=None, loader=None, pongo=Path('local.bin'), modules=True)
+                                          busybox=None, loader=None, pongo=Path('local.bin'), modules=True, device=None)
             lock.assert_not_called()
         with patch('sys.argv', ['orchard', 'run', str(self.base)]), \
                 patch.object(boot, 'run_directory') as run:
@@ -359,6 +359,40 @@ class RamTests(unittest.TestCase):
             boot.boot_ram(self.output, yes=True)
         upload.assert_not_called()
 
+    def test_project_device_selects_recipe_dtb_and_payload_receipt(self):
+        (self.base / 'orchard.toml').write_text('device = "experimental"\n')
+        for override, expected in ((None, 'experimental'), ('other-board', 'other-board')):
+            with self.subTest(override=override):
+                dtb = self.kernel / (expected + '.dtb')
+                dtb.write_bytes(expected.encode())
+                directory = self.base / 'examples/nested/first-boot'
+                directory.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.init, directory / 'init')
+                with patch.object(build, 'prepare_components', return_value=self.components) as prepare:
+                    ram.build_directory(directory, hardware=self.hardware, device=override)
+                self.assertEqual(prepare.call_args.kwargs['device'], expected)
+                self.assertEqual(ram.verify_ram(directory / 'out')['device'], expected)
+                packed = json.loads((directory / 'out/linux.bin.json').read_text())
+                component = next(row for row in packed['components'] if row['name'] == 'dtb')
+                self.assertEqual(component['sha256'], build.digest(dtb))
+
+    def test_cli_device_option_overrides_project_default(self):
+        from orchard_cli.command import main
+        with patch('sys.argv', ['orchard', 'build', str(self.base), '--device', 'experimental']), \
+                patch.object(ram, 'build_directory') as compose:
+            main()
+        self.assertEqual(compose.call_args.kwargs['device'], 'experimental')
+
+    def test_invalid_project_config_fails_before_build_or_receipt_changes(self):
+        (self.base / 'orchard.toml').write_text('device = [')
+        self.output.mkdir()
+        receipt = self.output / 'build.json'
+        receipt.write_text('last successful receipt')
+        with patch.object(build, 'prepare_components') as prepare, self.assertRaises(ValueError):
+            ram.build_directory(self.base, hardware=self.hardware)
+        prepare.assert_not_called()
+        self.assertEqual(receipt.read_text(), 'last successful receipt')
+
     def test_directory_content_builds_without_python_recipes(self):
         example = self.base / 'example'
         example.mkdir()
@@ -390,7 +424,7 @@ class RamTests(unittest.TestCase):
                     patch.object(build, 'prepare_components', return_value=self.components) as prepare, \
                     patch.object(build, 'cache_root', return_value=self.base / 'shared-cache'):
                 ram.build_directory(directory)
-                prepare.assert_called_once_with(self.hardware, self.base / 'shared-cache', kernel=None,
+                prepare.assert_called_once_with(self.hardware, self.base / 'shared-cache', device='j71b', kernel=None,
                                                 busybox=None, loader=None, pongo=None)
                 ram.verify_ram(directory / 'out')
                 if directory.name == 'charger 001':

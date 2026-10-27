@@ -9,6 +9,17 @@ In an editable distro workspace, use its root `./orchard` launcher to select
 local CLI/hardware sources and prepare Python without activating an environment.
 The workspace `.venv` can also be selected by an editor for bare `orchard` commands.
 
+## Default device recipe
+
+Put `device = "j71b"` in the repository's `orchard.toml` to select its default
+build recipe. RAM builds use the nearest config at or above the experiment,
+without crossing a Git repository boundary. `orchard build DIRECTORY --device NAME`
+overrides it; without a config the existing `j71b` default remains. No registered
+device description is required. The file currently accepts only `device`.
+Distro-owned producers can use `orchard_cli.build.configured_device(project_directory)`
+for the same default. Installation does not read this build setting and still
+rejects incompatible devices.
+
 ## Directory content
 
 A build directory contains an executable startup script named `init` and optional

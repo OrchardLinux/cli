@@ -8,13 +8,41 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
 from . import sources, kernel as kernels
+
+
+def configured_device(directory):
+    """Read the nearest orchard.toml up to the repository boundary, if present."""
+    directory = Path(directory).expanduser().resolve()
+    for parent in (directory, *directory.parents):
+        config = parent / 'orchard.toml'
+        if config.exists():
+            try:
+                with config.open('rb') as stream:
+                    settings = tomllib.load(stream)
+            except (OSError, ValueError) as error:
+                raise ValueError(f'{config}: {error}') from error
+            if set(settings) != {'device'}:
+                raise ValueError(f'{config}: expected only device = "board-name"')
+            device = settings['device']
+            if not isinstance(device, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', device):
+                raise ValueError(f'{config}: invalid device recipe name')
+            return device
+        if (parent / '.git').exists():
+            break
+    return 'j71b'
 
 
 def digest(path):
@@ -142,6 +170,12 @@ def _build_context(hardware, cache, device):
     return hardware, cache
 
 
+def _check_kernel_recipe(hardware, device):
+    for relative in ('kernel/configs/' + device + '/config', 'kernel/devicetree/' + device + '/build'):
+        if not (hardware / relative).is_file():
+            raise ValueError(f'Missing hardware recipe input: {hardware / relative}')
+
+
 def _prepare_kernel(hardware, cache, device):
     """Resolve one coherent kernel/DTB/module bundle under the component lock."""
     components = cache / 'components-v2'
@@ -163,6 +197,7 @@ def prepare_kernel(hardware=None, cache=None, *, device='j71b'):
     Assembly policy and explicit-component overrides belong to the caller.
     """
     hardware, cache = _build_context(hardware, cache, device)
+    _check_kernel_recipe(hardware, device)
     with component_lock(cache):
         return _prepare_kernel(hardware, cache, device)
 
@@ -177,6 +212,10 @@ def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
     """
     hardware, cache = _build_context(hardware, cache, device)
     components = cache / 'components-v2'
+    if kernel is None:
+        _check_kernel_recipe(hardware, device)
+    if loader is None and not any((hardware / 'boot/m1n1/patches' / device).glob('*.patch')):
+        raise ValueError(f'Missing loader patches for {device}; add a loader recipe or supply --loader FILE')
     with component_lock(cache):
         if pongo is None:
             def produce_pongo(stage):

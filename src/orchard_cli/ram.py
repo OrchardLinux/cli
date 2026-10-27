@@ -95,9 +95,10 @@ def assemble_ram(hardware, output, *, kernel, busybox, loader, pongo, init,
 
 
 def build_directory(directory, *, hardware=None, cache=None, kernel=None,
-                    busybox=None, loader=None, pongo=None, modules=False):
+                    busybox=None, loader=None, pongo=None, modules=False, device=None):
     """Build any DIRECTORY/init plus optional DIRECTORY/rootfs/; no layout convention."""
     directory = Path(directory).expanduser().resolve()
+    device = device if device is not None else build.configured_device(directory)
     if hardware is None:
         import orchard_hardware
         hardware = Path(orchard_hardware.__file__).resolve().parent
@@ -119,11 +120,11 @@ def build_directory(directory, *, hardware=None, cache=None, kernel=None,
             raise ValueError(f'Symlinks in rootfs are not supported yet: {path}')
         if path.is_file():
             files[str(path.relative_to(overlay))] = path
-    components = build.prepare_components(hardware, cache, kernel=kernel,
+    components = build.prepare_components(hardware, cache, device=device, kernel=kernel,
                                           busybox=busybox, loader=loader, pongo=pongo)
     hostname = re.sub(r'[^A-Za-z0-9_-]', '-', directory.name).strip('-_')[:63] or 'orchard-ram'
     assemble_ram(hardware, output, **components, init=init, files=files,
-                 modules=modules, hostname=hostname)
+                 modules=modules, hostname=hostname, device=device)
     receipt = json.loads((output / 'build.json').read_text())
     # Catch newly added/removed overlay files too, not only changes to old inputs.
     receipt['overlay'] = {'path': str(overlay), 'sha256': recipe_key(directory, ['rootfs'], ignore=())}
