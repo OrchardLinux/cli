@@ -5,7 +5,7 @@ import unittest
 from orchard_cli.apple.adt_tree import parse, u32s
 from orchard_cli.apple.macho import macho
 from orchard_cli.apple.osserialize import apple_xml
-from orchard_cli.apple import smartio
+from orchard_cli.apple import d5500, smartio
 from orchard_cli.j71b import touch
 
 
@@ -82,6 +82,43 @@ class BinaryCodecs(unittest.TestCase):
         self.assertEqual((data, report['kext']), (firmware[smartio.S8000], smartio.S8000))
         with self.assertRaisesRegex(ValueError, 'No unique SmartIO kext'):
             smartio.extract(blob, 'com.apple.driver.Unknown')
+
+    def test_vxd_firmware_record_is_found_by_its_pointers(self):
+        base, image, strings = 0x10000, bytes(range(256)) * 17, b'REL_1.0_Deva\0build\0'
+
+        def kernelcache(records):
+            body = bytearray(b'\0' * 256)
+            header = len(body)
+            text = header + 32 + 312
+            const, data = text + len(strings), text + len(strings) + len(image)
+            record = struct.pack('<QQIIQ', base + text, base + text + 13, 1024, len(image), base + const)
+            payload = b'\0' * 8 + record * records
+            segment = struct.pack('<II16s4Q4I', 0x19, 312, b'__TEXT', 0, 0, 0, 0, 3, 3, 3, 0)
+            sections = b''.join(struct.pack('<16s16sQQ8I', name, segname, base + offset, size, offset, 0, 0, 0, 0,
+                                            0, 0, 0)
+                                for name, segname, offset, size in ((b'__cstring', b'__TEXT', text, len(strings)),
+                                                                    (b'__const', b'__TEXT', const, len(image)),
+                                                                    (b'__data', b'__DATA', data, len(payload))))
+            body += struct.pack('<8I', 0xfeedfacf, 0, 0, 11, 1, 312, 0, 0) + segment + sections
+            body += strings + image + payload
+            info = (f'<dict><key>_PrelinkInfoDictionary</key><array><dict><key>CFBundleIdentifier</key>'
+                    f'<string>{d5500.D5500}</string><key>_PrelinkExecutableLoadAddr</key>'
+                    f'<integer>{hex(base + header)}</integer></dict></array></dict>').encode()
+            info_offset = len(body)
+            body += info
+            segment = struct.pack('<II16s4Q4I', 0x19, 152, b'__ALL', base, len(body), 0, len(body), 3, 3, 1, 0)
+            section = struct.pack('<16s16sQQ8I', b'__info', b'__PRELINK_INFO', base + info_offset,
+                                  len(info), info_offset, 0, 0, 0, 0, 0, 0, 0)
+            outer = struct.pack('<8I', 0xfeedfacf, 0, 0, 2, 1, 152, 0, 0) + segment + section
+            return outer + bytes(body[len(outer):])
+
+        data, report = d5500.extract(kernelcache(1))
+        self.assertEqual((data, report['firmware'], report['build']), (image, 'REL_1.0_Deva', 'build'))
+        for records in (0, 2):
+            with self.subTest(records=records), self.assertRaisesRegex(ValueError, 'No unique VXD firmware record'):
+                d5500.extract(kernelcache(records))
+        with self.assertRaisesRegex(ValueError, 'No unique AppleD5500 kext'):
+            d5500.extract(kernelcache(1).replace(d5500.D5500.encode(), b'com.apple.driver.AppleD5501'))
 
     def test_touch_integer_bounds_and_word_encoding(self):
         self.assertEqual(touch.uint('42', 'value'), 42)

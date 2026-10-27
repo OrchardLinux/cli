@@ -5,6 +5,7 @@ import tempfile
 from typing import Dict, Optional
 
 from orchard_cli.apple import ipsw
+from orchard_cli.apple.d5500 import extract as video_decoder
 from orchard_cli.apple.smartio import S8000, extract as smartio
 from orchard_cli.cache import cache_root
 from orchard_cli.progress import Clock, Progress
@@ -17,7 +18,8 @@ PROFILE_INPUT = 'J71t.mtprops'
 BLUETOOTH = 'BCM4355C0-FearA-USI.hcd'
 SMARTIO = 's8000-smartio.bin'
 TOUCH = 'j71t-n1.bin'
-DERIVED = (BLUETOOTH, SMARTIO, TOUCH)
+VIDEO_DECODER = 'vxd-deva.bin'
+DERIVED = (BLUETOOTH, SMARTIO, TOUCH, VIDEO_DECODER)
 
 
 def verified(raw: Path, name: str, checksum: str) -> bytes:
@@ -58,6 +60,9 @@ def ensure(clock: Clock, progress: Progress, *, allow_download: bool = True) -> 
             elif name == SMARTIO:
                 kernel = kernel or ipsw.extract_kernel(executable, archive, spec['device'], raw)
                 data, _ = smartio(kernel, S8000)
+            elif name == VIDEO_DECODER:
+                kernel = kernel or ipsw.extract_kernel(executable, archive, spec['device'], raw)
+                data, _ = video_decoder(kernel)
             elif name == TOUCH:
                 data = touch_firmware(verified(raw, PROFILE_INPUT, expected[PROFILE_INPUT]))
             else:

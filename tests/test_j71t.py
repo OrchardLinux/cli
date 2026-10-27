@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from orchard_hardware import device as hardware_device
 from orchard_cli import devices
 from orchard_cli.apple import usb
+from orchard_cli.apple.d5500 import extract as video_decoder_extract
 from orchard_cli.apple.smartio import S8000, extract as smartio_extract
 from orchard_cli.contracts import Adapter
 from orchard_cli.staging import stage
@@ -171,7 +172,7 @@ class Inputs(unittest.TestCase):
     def test_derived_inputs_use_their_board_sources(self):
         mtprops = plistlib.dumps({'C1F15,1': {'Constructed Firmware': packet()}})
         derived = {'BCM4355C0-FearA-USI.hcd': b'hcd', 's8000-smartio.bin': b'smartio', 'j71t-n1.bin': packet(),
-                   'feara.trx': b'wifi'}
+                   'vxd-deva.bin': b'deva', 'feara.trx': b'wifi'}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             spec = {'device': 'iPad6,11', 'ipsw_url': 'https://example.invalid/ipsw', 'ipsw_bytes': 1,
@@ -194,11 +195,14 @@ class Inputs(unittest.TestCase):
                  patch.object(inputs.ipsw, 'extract_files', side_effect=extract), \
                  patch.object(inputs.ipsw, 'hcd_from_binary', return_value=b'hcd') as hcd, \
                  patch.object(inputs.ipsw, 'extract_kernel', return_value=b'kernel') as kernel, \
-                 patch.object(inputs, 'smartio', return_value=(b'smartio', {})) as smartio:
+                 patch.object(inputs, 'smartio', return_value=(b'smartio', {})) as smartio, \
+                 patch.object(inputs, 'video_decoder', return_value=(b'deva', {})) as video_decoder:
                 firmware = inputs.ensure(Mock(), Mock())
                 hcd.assert_called_once_with(b'tool', hashlib.sha256(b'hcd').hexdigest())
                 kernel.assert_called_once()
                 smartio.assert_called_once_with(b'kernel', S8000)
+                video_decoder.assert_called_once_with(b'kernel')
+                self.assertEqual((firmware / 'extra/vxd-deva.bin').read_bytes(), b'deva')
                 self.assertEqual((firmware / 'extra/j71t-n1.bin').read_bytes(), packet())
                 self.assertEqual((firmware / 'extracted/feara.trx').read_bytes(), b'wifi')
                 self.assertEqual(inputs.ensure(Mock(), Mock(), allow_download=False), firmware)
@@ -244,6 +248,7 @@ class LocalInputs(unittest.TestCase):
         pinned = {row['name']: row['sha256'] for row in json.loads(prepare.MANIFEST.read_text())['files']}
         checks = {'j71t-n1.bin': lambda: touch.firmware(self.find('J71t.mtprops')),
                   's8000-smartio.bin': lambda: smartio_extract(self.find('kernelcache*'), S8000)[0],
+                  'vxd-deva.bin': lambda: video_decoder_extract(self.find('kernelcache*'))[0],
                   'BCM4355C0-FearA-USI.hcd': lambda: inputs.ipsw.hcd_from_binary(
                       self.find('BlueTool'), pinned['BCM4355C0-FearA-USI.hcd'])}
         for name, produce in checks.items():
