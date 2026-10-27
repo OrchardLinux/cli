@@ -12,7 +12,7 @@ from .ram import verify_ram
 
 def confirm_boot():
     if not sys.stdin.isatty():
-        raise ValueError('Boot confirmation requires an interactive terminal')
+        raise ValueError('Boot confirmation requires an interactive terminal; use --yes for non-interactive RAM boot')
     try:
         answer = input('Boot this device? [Y/n] ').strip().lower()
     except EOFError:
@@ -21,7 +21,7 @@ def confirm_boot():
         raise ValueError('Boot cancelled')
 
 
-def boot_ram(output):
+def boot_ram(output, *, yes=False):
     """Boot once via existing USB/Pongo transport. No recovery API required."""
     from orchard_hardware import device as hardware_device
     from .apple import usb
@@ -45,7 +45,8 @@ def boot_ram(output):
             raise ValueError('Install palera1n before booting')
         print(f'{description["device"]["name"]}, ECID {ecid:x}, USB {device["location"]}, mode {device["mode"]}.')
         print("Experimental RAM boot; the payload's /init determines what runs.")
-        confirm_boot()
+        if not yes:
+            confirm_boot()
         verify_ram(output)
         usb.selected(device['location'], ecid, chip=chip, board=board, mode=device['mode'])
         if device['mode'] == 'dfu':
@@ -61,9 +62,9 @@ def boot_ram(output):
     print('or screen /dev/ttyACM0 115200 (Linux; verify the actual port).')
 
 
-def run_directory(directory):
+def run_directory(directory, *, yes=False):
     """Friendly error boundary around boot_ram; never retries a boot request."""
     try:
-        boot_ram(Path(directory).expanduser().resolve() / 'out')
+        boot_ram(Path(directory).expanduser().resolve() / 'out', yes=yes)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, KeyboardInterrupt) as error:
         raise SystemExit(f'{error}\nStopped. Inspect device state before any new boot attempt.')

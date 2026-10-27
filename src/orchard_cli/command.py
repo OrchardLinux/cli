@@ -33,6 +33,8 @@ def main():
     build.add_argument('--modules', action='store_true', help='include matching modules for manual use; does not load them')
     run = commands.add_parser('run', help='boot the last successful RAM payload for DIRECTORY')
     run.add_argument('directory', type=Path, help='any directory whose out/ contains the built payload')
+    run.add_argument('-y', '--yes', action='store_true',
+                     help='boot without prompting, including without an interactive terminal')
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
@@ -88,7 +90,7 @@ def main():
             return
         if args.action == 'run':
             from orchard_cli.boot import run_directory
-            run_directory(args.directory)
+            run_directory(args.directory, yes=args.yes)
             return
         with ExitStack() as stack:
             if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host'):

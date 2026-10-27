@@ -1,4 +1,7 @@
 """Cross-checkout reuse with real local Git and mocked compiler recipes."""
+from contextlib import redirect_stdout
+import io
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -85,6 +88,51 @@ class SharedBuildCacheTests(unittest.TestCase):
         self.assertEqual(first['kernel'], second['kernel'])
         self.assertEqual(len(self.calls), 2)
         self.assertFalse((self.two / 'kernel/.work').exists())
+
+    def test_kernel_only_caller_reuses_ram_build_without_checkout_or_other_producers(self):
+        first = self.prepare(self.one)
+        self.upstream.rename(self.root / 'upstream-offline')
+        with patch.object(kernel, 'build_base', side_effect=AssertionError('base rebuilt')), \
+                patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')), \
+                patch.object(sources, 'checkout', side_effect=AssertionError('source checked out')), \
+                patch.object(build, 'command', side_effect=AssertionError('unrelated producer invoked')):
+            second = build.prepare_kernel(self.two, self.cache)
+        self.assertEqual(first['kernel'], second)
+        self.assertFalse((self.two / 'kernel/.work').exists())
+
+    def test_ram_build_reuses_kernel_only_build(self):
+        with patch.object(kernel, 'build_base', side_effect=self.produce), \
+                patch.object(kernel, 'build_device', side_effect=lambda hw, cache, device, base, out:
+                             self.produce(hw, cache, device, out, base)):
+            first = build.prepare_kernel(self.one, self.cache)
+        second = self.prepare(self.two)
+        self.assertEqual(first, second['kernel'])
+        self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
+        self.assertFalse((self.two / 'kernel/.work').exists())
+
+    def test_kernel_defaults_to_active_hardware_and_shared_cache_environment(self):
+        import orchard_hardware
+        first = self.prepare(self.one)
+        with patch.object(orchard_hardware, '__file__', str(self.two / '__init__.py')), \
+                patch.dict(os.environ, {'ORCHARD_CACHE_DIR': str(self.cache)}), \
+                patch.object(kernel, 'build_base', side_effect=AssertionError('base rebuilt')), \
+                patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')):
+            second = build.prepare_kernel()
+        self.assertEqual(first['kernel'], second)
+        self.assertFalse((self.two / 'kernel/.work').exists())
+
+    def test_cache_misses_and_hits_are_visible_without_changing_identity(self):
+        with redirect_stdout(io.StringIO()) as first_log:
+            first = self.prepare(self.one)
+        self.assertIn('Building kernel-base-j71b (cache miss):', first_log.getvalue())
+        self.assertIn('Building kernel-j71b (cache miss):', first_log.getvalue())
+        with redirect_stdout(io.StringIO()) as second_log:
+            second = build.prepare_kernel(self.two, self.cache)
+        self.assertEqual(first['kernel'], second)
+        self.assertIn('Reusing kernel-base-j71b:', second_log.getvalue())
+        self.assertIn('Reusing kernel-j71b:', second_log.getvalue())
+        self.assertNotIn('Building ', second_log.getvalue())
+        self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
 
     def test_external_driver_change_reuses_kernel_base_and_sdk(self):
         first = self.prepare(self.one)

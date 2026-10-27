@@ -182,7 +182,78 @@ class RamTests(unittest.TestCase):
         with patch('sys.argv', ['orchard', 'run', str(self.base)]), \
                 patch.object(boot, 'run_directory') as run:
             main()
-            run.assert_called_once_with(self.base)
+            run.assert_called_once_with(self.base, yes=False)
+
+    def test_cli_noninteractive_run_flags(self):
+        from orchard_cli.command import main
+        for flag in ('--yes', '-y'):
+            with self.subTest(flag=flag), \
+                    patch('sys.argv', ['orchard', 'run', str(self.base), flag]), \
+                    patch.object(boot, 'run_directory') as run, \
+                    patch('orchard_cli.command.operation_lock') as lock:
+                main()
+                run.assert_called_once_with(self.base, yes=True)
+                lock.assert_not_called()
+
+    def test_noninteractive_pongo_boot_skips_only_confirmation(self):
+        self.build()
+        device = dict(mode='pongo', chip=0x8010, board=0x18, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                patch('orchard_cli.apple.usb.selected') as selected, \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()) as lock, \
+                patch.object(boot, 'verify_ram', wraps=ram.verify_ram) as verify, \
+                patch('sys.stdin.isatty', return_value=False), \
+                patch('builtins.input', side_effect=AssertionError('unexpected prompt')):
+            boot.boot_ram(self.output, yes=True)
+        lock.assert_called_once()
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(selected.call_count, 2)
+        upload.assert_called_once()
+
+    def test_noninteractive_without_yes_refuses_before_usb_mutation(self):
+        self.build()
+        device = dict(mode='pongo', chip=0x8010, board=0x18, ecid=123, location='fake')
+        with patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                patch('orchard_cli.apple.usb.selected') as selected, \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                patch('sys.stdin.isatty', return_value=False), \
+                self.assertRaisesRegex(ValueError, '--yes'):
+            boot.boot_ram(self.output)
+        selected.assert_not_called()
+        upload.assert_not_called()
+
+    def test_yes_does_not_bypass_device_checks(self):
+        self.build()
+        for changes in ({'mode': 'linux'}, {'chip': 0x8011}, {'board': 0x19}, {'ecid': None}):
+            device = dict(mode='pongo', chip=0x8010, board=0x18, ecid=123, location='fake')
+            device.update(changes)
+            with self.subTest(changes=changes), \
+                    patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                    patch('orchard_cli.apple.usb.selected') as selected, \
+                    patch('orchard_cli.transports.pongo.upload') as upload, \
+                    patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                    self.assertRaises(ValueError):
+                boot.boot_ram(self.output, yes=True)
+            selected.assert_not_called()
+            upload.assert_not_called()
+
+    def test_yes_does_not_bypass_payload_verification(self):
+        self.build()
+        (self.output / 'linux.bin').write_bytes(b'corrupted')
+        with patch('orchard_cli.apple.usb.sole_target') as discover, \
+                patch('orchard_cli.transports.pongo.upload') as upload, \
+                self.assertRaises(ValueError):
+            boot.boot_ram(self.output, yes=True)
+        discover.assert_not_called()
+        upload.assert_not_called()
+
+    def test_noninteractive_run_never_retries(self):
+        with patch.object(boot, 'boot_ram', side_effect=RuntimeError('uncertain upload')) as upload, \
+                self.assertRaisesRegex(SystemExit, 'Inspect device state'):
+            boot.run_directory(self.base, yes=True)
+        upload.assert_called_once_with(self.base / 'out', yes=True)
 
     def test_directory_content_builds_without_python_recipes(self):
         example = self.base / 'example'
@@ -236,7 +307,7 @@ class RamTests(unittest.TestCase):
         directory = self.base / 'use_cases/deeply/nested/system'
         with patch.object(boot, 'boot_ram') as upload:
             boot.run_directory(directory)
-        upload.assert_called_once_with(directory / 'out')
+        upload.assert_called_once_with(directory / 'out', yes=False)
 
     def test_directory_requires_visible_init_before_building_components(self):
         with patch.object(build, 'prepare_components') as components:

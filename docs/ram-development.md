@@ -5,7 +5,7 @@ orchard build examples/minimal-boot
 orchard run examples/minimal-boot
 ```
 
-In the editable Omarchy workspace, use its root `./orchard` launcher to select
+In an editable distro workspace, use its root `./orchard` launcher to select
 local CLI/hardware sources and prepare Python without activating an environment.
 The workspace `.venv` can also be selected by an editor for bare `orchard` commands.
 
@@ -32,13 +32,22 @@ directory's `out/`, independently of its name or location.
 `orchard run DIRECTORY` verifies the last successful payload, shows the sole
 matching device, asks `Boot this device? [Y/n]`, and uploads once via Pongo. It
 never installs a rootfs, calls a device RPC or claims Linux readiness. It requires
-an interactive terminal and refuses to reboot running Linux. A custom `/init`
-owns device behavior; the host tool cannot infer its safety.
+an interactive terminal by default. Use `orchard run DIRECTORY --yes` (or `-y`)
+to explicitly authorize a non-interactive boot without the prompt. This skips
+only confirmation: payload verification, sole-device/identity checks, operation
+locking, refusal to reboot running Linux and the single-attempt policy remain.
+A custom `/init` owns device behavior; the host tool cannot infer its safety.
 
 ## Lower-level Python functions
 
 The Python functions are separated by responsibility:
 
+- `orchard_cli.build.prepare_kernel(hardware=None, cache=None, device='j71b')`:
+  build/reuse a coherent kernel/DTB/module bundle only. Defaults to the active
+  hardware package and normal shared cache; does not build loaders, Pongo or tools.
+  A distro-owned producer can consume this bundle without any distro setup or
+  assembly knowledge in CLI. Uses exactly the same kernel keys and artifacts as
+  `prepare_components`, including when called from a fresh hardware checkout.
 - `orchard_cli.build.prepare_components(hardware, cache, ...)`: shared component
   building and cache reuse. Invokes hardware-owned kernel/tool/loader producers;
   does not compose RAM roots, install systems or access a device.

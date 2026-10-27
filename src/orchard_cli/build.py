@@ -114,6 +114,7 @@ def cached_component(cache, name, key, produce):
                 raise ValueError(f'Cached component changed: {path}; remove that component and rebuild')
         print(f'Reusing {name}: {target}', flush=True)
         return target
+    print(f'Building {name} (cache miss): {target}', flush=True)
     with tempfile.TemporaryDirectory(prefix='build-', dir=parent) as temporary:
         stage = Path(temporary) / 'component'
         stage.mkdir()
@@ -128,7 +129,45 @@ def cached_component(cache, name, key, produce):
     return target
 
 
-def prepare_components(hardware, cache=None, *, device='j71b', kernel=None,
+def _build_context(hardware, cache, device):
+    if hardware is None:
+        import orchard_hardware
+        hardware = Path(orchard_hardware.__file__).resolve().parent
+    hardware = Path(hardware).resolve()
+    cache = Path(cache).resolve() if cache is not None else cache_root()
+    if not (hardware / 'kernel/build').is_file():
+        raise ValueError(f'Not a hardware checkout: {hardware}')
+    if not device or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in device):
+        raise ValueError('Invalid device profile')
+    return hardware, cache
+
+
+def _prepare_kernel(hardware, cache, device):
+    """Resolve one coherent kernel/DTB/module bundle under the component lock."""
+    components = cache / 'components-v2'
+    base_key = lambda: kernel_base_key(hardware, device, cache)
+    def produce_base(stage):
+        kernels.build_base(hardware, cache, device, stage / 'kernel')
+    base = cached_component(components, 'kernel-base-' + device, base_key, produce_base) / 'kernel'
+    def produce_kernel(stage):
+        kernels.build_device(hardware, cache, device, base, stage / 'kernel')
+    directory = cached_component(components, 'kernel-' + device,
+        lambda: kernel_key(hardware, device, base.parent.name), produce_kernel)
+    return directory / 'kernel'
+
+
+def prepare_kernel(hardware=None, cache=None, *, device='j71b'):
+    """Build/reuse a coherent kernel, DTB and modules, without boot/tool producers.
+
+    Defaults to the active hardware package and normal shared Orchard cache.
+    Assembly policy and explicit-component overrides belong to the caller.
+    """
+    hardware, cache = _build_context(hardware, cache, device)
+    with component_lock(cache):
+        return _prepare_kernel(hardware, cache, device)
+
+
+def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
                        busybox=None, loader=None, pongo=None):
     """Build/reuse components shared by experiments and larger images.
 
@@ -136,13 +175,8 @@ def prepare_components(hardware, cache=None, *, device='j71b', kernel=None,
     installer-specific. Callers supplying a different hardware tree must also
     arrange for its Python build dependencies to be importable.
     """
-    hardware = Path(hardware).resolve()
-    cache = Path(cache).resolve() if cache is not None else cache_root()
+    hardware, cache = _build_context(hardware, cache, device)
     components = cache / 'components-v2'
-    if not (hardware / 'kernel/build').is_file():
-        raise ValueError(f'Not a hardware checkout: {hardware}')
-    if not device or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in device):
-        raise ValueError('Invalid device profile')
     with component_lock(cache):
         if pongo is None:
             def produce_pongo(stage):
@@ -158,15 +192,7 @@ def prepare_components(hardware, cache=None, *, device='j71b', kernel=None,
                 lambda: recipe_key(hardware, ['boot/quiet']), produce_pongo)
             pongo = directory / 'pongo.bin'
         if kernel is None:
-            base_key = lambda: kernel_base_key(hardware, device, cache)
-            def produce_base(stage):
-                kernels.build_base(hardware, cache, device, stage / 'kernel')
-            base = cached_component(components, 'kernel-base-' + device, base_key, produce_base) / 'kernel'
-            def produce_kernel(stage):
-                kernels.build_device(hardware, cache, device, base, stage / 'kernel')
-            directory = cached_component(components, 'kernel-' + device,
-                lambda: kernel_key(hardware, device, base.parent.name), produce_kernel)
-            kernel = directory / 'kernel'
+            kernel = _prepare_kernel(hardware, cache, device)
         if busybox is None:
             def produce_tools(stage):
                 work = hardware / '.work/tools'
