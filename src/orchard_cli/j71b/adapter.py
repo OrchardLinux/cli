@@ -9,9 +9,12 @@ from orchard_cli.apple import usb, boot as apple_boot, adt_capture
 from orchard_hardware.apple.adt import validate as validate_adt
 from orchard_cli.apple.adt_tree import parse
 from orchard_cli.transports import ssh
-from .mixin import build as prepare_mixin
-from .inputs import ensure as firmware_inputs
+from functools import partial
+from orchard_cli import firmware
 from .config import PROFILE, NAME, PRODUCT, CHIP, BOARD, APPLE_PRODUCT
+
+firmware_inputs = partial(firmware.ensure, PROFILE)
+prepare_mixin = partial(firmware.mixin, PROFILE)
 
 REBOOT_MESSAGE = 'A fresh recovery boot is required.\nPut the iPad in DFU mode, then run: orchard install'
 

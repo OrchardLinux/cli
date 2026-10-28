@@ -5,7 +5,7 @@ import unittest
 from orchard_cli.apple.adt_tree import parse, u32s
 from orchard_cli.apple.macho import macho
 from orchard_cli.apple.osserialize import apple_xml
-from orchard_cli.j71b import touch
+from orchard_cli.apple import z2fw as touch
 
 
 def property_record(name, value):
