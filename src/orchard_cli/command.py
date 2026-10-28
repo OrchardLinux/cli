@@ -49,7 +49,7 @@ def main():
     distros.add_argument('source', nargs='?')
     check = commands.add_parser('resolve', help='verify inputs without accessing a device')
     check.add_argument('source')
-    check.add_argument('--profile', default='j71b')
+    check.add_argument('--profile', required=True)
     check.add_argument('--boot', action='store_true', help='resolve only boot assets')
     commands.add_parser('devices', help='list USB devices without modifying them')
     commands.add_parser('setup-host', help='install missing boot tools and Linux USB permissions; no device access')
@@ -113,7 +113,8 @@ def main():
                 record, assets = resolve(args.source, args.profile, progress, purpose='boot' if args.boot else 'install')
                 result = {'manifest': record, 'files': {key: str(path) for key, path in assets.items()}}
             elif args.action == 'devices':
-                result = load().list_devices()
+                from orchard_cli.apple import usb
+                result = usb.devices()
             elif args.action == 'setup-host':
                 from orchard_cli.host_setup import setup
                 result = setup(progress)

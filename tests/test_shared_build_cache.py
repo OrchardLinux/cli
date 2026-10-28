@@ -83,7 +83,7 @@ class SharedBuildCacheTests(unittest.TestCase):
         with patch.object(kernel, 'build_base', side_effect=self.produce), \
                 patch.object(kernel, 'build_device', side_effect=lambda hw, cache, device, base, out:
                              self.produce(hw, cache, device, out, base)):
-            return build.prepare_components(hardware, self.cache, **self.overrides)
+            return build.prepare_components(hardware, self.cache, device='j71b', **self.overrides)
 
     def test_fresh_second_checkout_neither_downloads_checks_out_nor_compiles_linux(self):
         first = self.prepare(self.one)
@@ -102,7 +102,7 @@ class SharedBuildCacheTests(unittest.TestCase):
                 patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')), \
                 patch.object(sources, 'checkout', side_effect=AssertionError('source checked out')), \
                 patch.object(build, 'command', side_effect=AssertionError('unrelated producer invoked')):
-            second = build.prepare_kernel(self.two, self.cache)
+            second = build.prepare_kernel(self.two, self.cache, device='j71b')
         self.assertEqual(first['kernel'], second)
         self.assertFalse((self.two / 'kernel/.work').exists())
 
@@ -110,7 +110,7 @@ class SharedBuildCacheTests(unittest.TestCase):
         with patch.object(kernel, 'build_base', side_effect=self.produce), \
                 patch.object(kernel, 'build_device', side_effect=lambda hw, cache, device, base, out:
                              self.produce(hw, cache, device, out, base)):
-            first = build.prepare_kernel(self.one, self.cache)
+            first = build.prepare_kernel(self.one, self.cache, device='j71b')
         second = self.prepare(self.two)
         self.assertEqual(first, second['kernel'])
         self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
@@ -123,7 +123,7 @@ class SharedBuildCacheTests(unittest.TestCase):
                 patch.dict(os.environ, {'ORCHARD_CACHE_DIR': str(self.cache)}), \
                 patch.object(kernel, 'build_base', side_effect=AssertionError('base rebuilt')), \
                 patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')):
-            second = build.prepare_kernel()
+            second = build.prepare_kernel(device='j71b')
         self.assertEqual(first['kernel'], second)
         self.assertFalse((self.two / 'kernel/.work').exists())
 
@@ -133,7 +133,7 @@ class SharedBuildCacheTests(unittest.TestCase):
         self.assertIn('Building kernel-base-apple (cache miss):', first_log.getvalue())
         self.assertIn('Building kernel-j71b (cache miss):', first_log.getvalue())
         with redirect_stdout(io.StringIO()) as second_log:
-            second = build.prepare_kernel(self.two, self.cache)
+            second = build.prepare_kernel(self.two, self.cache, device='j71b')
         self.assertEqual(first['kernel'], second)
         self.assertIn('Reusing kernel-base-apple:', second_log.getvalue())
         self.assertIn('Reusing kernel-j71b:', second_log.getvalue())
@@ -147,7 +147,7 @@ class SharedBuildCacheTests(unittest.TestCase):
         shutil.rmtree(first['kernel'].parent)
         with patch.object(kernel, 'build_base', side_effect=AssertionError('silently rebuilt')), \
                 self.assertRaisesRegex(ValueError, 'Cached component changed'):
-            build.prepare_kernel(self.two, self.cache)
+            build.prepare_kernel(self.two, self.cache, device='j71b')
 
     def test_missing_recipe_fails_before_any_checkout_or_producer(self):
         with patch.object(sources, 'checkout', side_effect=AssertionError('checked out source')), \

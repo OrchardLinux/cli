@@ -45,7 +45,7 @@ def configured_device(directory):
             return device
         if (parent / '.git').exists():
             break
-    return 'j71b'
+    return None
 
 
 def digest(path):
@@ -196,7 +196,7 @@ def _prepare_kernel(hardware, cache, device):
     return directory / 'kernel'
 
 
-def prepare_kernel(hardware=None, cache=None, *, device='j71b'):
+def prepare_kernel(hardware=None, cache=None, *, device):
     """Build/reuse a coherent kernel, DTB and modules, without boot/tool producers.
 
     Defaults to the active hardware package and normal shared Orchard cache.
@@ -208,7 +208,7 @@ def prepare_kernel(hardware=None, cache=None, *, device='j71b'):
         return _prepare_kernel(hardware, cache, device)
 
 
-def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
+def prepare_components(hardware=None, cache=None, *, device, kernel=None,
                        busybox=None, loader=None, pongo=None):
     """Build/reuse components shared by experiments and larger images.
 
@@ -242,13 +242,13 @@ def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
         if busybox is None:
             def produce_tools(stage):
                 work = hardware / '.work/tools'
-                work = work / recipe_key(hardware, ['boot/initramfs/j71b/recovery', 'buildenv.py'])
+                work = work / recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py'])
                 if not (work / 'bin/busybox').exists():
-                    command(hardware / 'boot/initramfs/j71b/recovery/build-tools',
+                    command(hardware / 'boot/initramfs/recovery/build-tools',
                             env={**os.environ, 'OMA_RECOVERY_TOOLS_WORK': str(work)})
                 shutil.copyfile(work / 'bin/busybox', stage / 'busybox')
             directory = cached_component(components, 'busybox',
-                lambda: recipe_key(hardware, ['boot/initramfs/j71b/recovery', 'buildenv.py']), produce_tools)
+                lambda: recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py']), produce_tools)
             busybox = directory / 'busybox'
         if loader is None:
             def produce_loader(stage):

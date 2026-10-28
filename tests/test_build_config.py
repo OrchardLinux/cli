@@ -6,7 +6,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 from orchard_cli import build, service
-from orchard_cli.j71b import adapter
+from orchard_cli import devices
+from orchard_cli.apple import device as adapter_module
+
+adapter = devices.load('j71b')
 
 
 class BuildConfigTests(unittest.TestCase):
@@ -28,14 +31,14 @@ class BuildConfigTests(unittest.TestCase):
         (self.example / 'orchard.toml').write_text('device = "experimental"\n')
         self.assertEqual(build.configured_device(self.example), 'experimental')
 
-    def test_no_config_keeps_existing_default(self):
+    def test_no_config_selects_no_device(self):
         (self.root / '.git').mkdir()
-        self.assertEqual(build.configured_device(self.example), 'j71b')
+        self.assertIsNone(build.configured_device(self.example))
 
     def test_does_not_inherit_another_repositorys_config(self):
         self.config.write_text('device = "unrelated"\n')
         (self.example / '.git').write_text('gitdir: elsewhere\n')
-        self.assertEqual(build.configured_device(self.example), 'j71b')
+        self.assertIsNone(build.configured_device(self.example))
 
     def test_invalid_or_unused_settings_fail_instead_of_silently_defaulting(self):
         for content in ('', 'device = [', 'device = 123', 'device = "../escape"',
@@ -52,13 +55,13 @@ class BuildConfigTests(unittest.TestCase):
                                 ecid=123, location='fake')
                 observed.update(changes)
                 with self.subTest(mode=mode, changes=changes), \
-                        patch.object(adapter.usb, 'devices', return_value=[observed]), \
+                        patch.object(adapter_module.usb, 'devices', return_value=[observed]), \
                         patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
                         patch.object(build, 'configured_device', side_effect=AssertionError('installer read build config')), \
                         patch.object(service, 'ask') as prompt, \
                         patch.object(service, 'resolve') as download, \
                         patch.object(adapter, 'boot') as boot, \
-                        self.assertRaisesRegex(ValueError, 'Unsupported device'):
+                        self.assertRaisesRegex(ValueError, 'not one Orchard supports'):
                     service.install('unused-manifest', progress=Mock())
                 prompt.assert_not_called()
                 download.assert_not_called()

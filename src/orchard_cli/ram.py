@@ -30,7 +30,7 @@ def check_busybox(path):
 
 
 def assemble_ram(hardware, output, *, kernel, busybox, loader, pongo, init,
-                 files=None, hostname='orchard-ram', device='j71b', modules=False,
+                 files=None, hostname='orchard-ram', device, modules=False,
                  bootargs='console=tty0 loglevel=7 rdinit=/init', sources=()):
     """Pack a caller-owned /init and arbitrary files. No firmware or modules are
     activated here. Files map relative RAM-root destinations to local files.
@@ -99,6 +99,8 @@ def build_directory(directory, *, hardware=None, cache=None, kernel=None,
     """Build any DIRECTORY/init plus optional DIRECTORY/rootfs/; no layout convention."""
     directory = Path(directory).expanduser().resolve()
     device = device if device is not None else build.configured_device(directory)
+    if device is None:
+        raise ValueError('No device selected: add device = "<board>" to orchard.toml')
     if hardware is None:
         import orchard_hardware
         hardware = Path(orchard_hardware.__file__).resolve().parent

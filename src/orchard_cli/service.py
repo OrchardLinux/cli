@@ -209,6 +209,9 @@ def finish_ssh_access(client, adapter: Adapter, status, report, path, clock, inp
 def install(manifest=None, *, input_fn=input, progress=None):
     clock, progress = Clock(), progress or Progress()
     adapter, device = choose()  # Definition of installation timing begins here.
+    if not adapter.INSTALL:
+        raise ValueError(f'Installing on the {adapter.NAME} is not qualified yet; '
+                         'RAM boot is available for testing')
     answer = ask(clock, f'Install Linux on {adapter.NAME}? [Y/n] ', input_fn)
     if answer.lower() not in ('', 'y', 'yes'):
         progress.phase('Cancelled; no download or device mutation performed')

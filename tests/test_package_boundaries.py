@@ -23,8 +23,8 @@ class PackageBoundaries(unittest.TestCase):
     def test_removed_board_local_modules_are_not_shipped(self):
         package=Path(orchard_cli.__file__).parent
         self.assertFalse((package/'apple/adt.py').exists())
-        for name in ('range_download','ssh','usb','linux_usb','adt','adt_tree','adt_capture'):
-            self.assertFalse((package/'j71b'/(name+'.py')).exists(), name)
+        # Devices are hardware data; the CLI ships no per-device package.
+        self.assertFalse((package/'j71b').exists())
 
     def test_shared_imports_and_offline_commands_do_not_import_j71b(self):
         script = '''
@@ -104,12 +104,14 @@ sys.argv=['orchard','resolve',MANIFEST];main()
         with patch.object(usb, 'devices', return_value=[device,{**device,'location':'other'}]):
             with self.assertRaises(ValueError):usb.recovery('Another Recovery')
 
-    def test_j71b_retains_its_model_gate_after_shared_capture(self):
-        from orchard_cli.j71b import adapter
-        with patch.object(adapter.adt_capture,'capture',return_value=b'fresh'), \
-             patch.object(adapter,'parse',return_value=Mock(properties={'model':b'different\0'})):
+    def test_adt_capture_keeps_its_model_gate(self):
+        from orchard_cli import devices
+        from orchard_cli.apple import device as adapter_module
+        adapter = devices.load('j71b')
+        with patch.object(adapter_module.adt_capture,'capture',return_value=b'fresh'), \
+             patch.object(adapter_module,'parse',return_value=Mock(properties={'model':b'different\0'})):
             with self.assertRaisesRegex(ValueError,'Captured ADT is not for'):
-                adapter.read_adt()
+                adapter.capture_adt()
 
     def test_cached_firmware_archive_is_verified_without_download(self):
         with tempfile.TemporaryDirectory() as directory:
