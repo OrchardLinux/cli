@@ -25,8 +25,8 @@ class LaunchFlow(unittest.TestCase):
             receipt={'release':'alpine','root_sha256':'a'*64,'directory':'minimal'}
             adapter=Mock(PROFILE='j71b',NAME='iPad')
             adapter.connect.return_value=nullcontext(connection)
-            adapter.capture_adt.return_value=b'fresh ADT'
-            def mixin(adt,firmware,dest):
+            adapter.capture_adt.side_effect=AssertionError('launch must not need the device ADT')
+            def mixin(firmware,dest):
                 dest.mkdir();path=dest/'mixin.tar.gz';path.write_bytes(b'x')
                 return path,{'bytes':1,'sha256':'a'*64}
             adapter.prepare_mixin.side_effect=mixin

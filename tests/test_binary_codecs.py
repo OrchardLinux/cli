@@ -64,19 +64,23 @@ class BinaryCodecs(unittest.TestCase):
         with self.assertRaises(ValueError):
             touch.swapped(b'odd')
 
-    def test_calibration_packets_have_exact_wire_layout(self):
-        packet = touch.calibration_packet(0x100000, b'\x01\x02\x03')
-        self.assertEqual(packet.hex(), '18e1300100000000001000100201000300060000')
+    def test_blob_packets_decode_and_reject_damage(self):
+        # HBPP blob packet as apple_z2 builds it for J71b calibration.
+        packet = bytes.fromhex('18e1300100000000001000100201000300060000')
         self.assertEqual(touch.decode_blob(packet), (0x100000, b'\x01\x02\x03\0'))
         for index in (0, 4, 10, 12, len(packet) - 1):
             damaged = bytearray(packet)
             damaged[index] ^= 1
             with self.subTest(index=index), self.assertRaises(ValueError):
                 touch.decode_blob(bytes(damaged))
-        with self.assertRaises(ValueError):
-            touch.calibration_packet(0xffffffff, b'abcd')
-        with self.assertRaises(ValueError):
-            touch.calibration_packet(0, b'')
+
+    def test_calibration_records_have_exact_wire_layout(self):
+        payload = struct.pack('<III', 0x100000, 0x500, touch.PROVIDERS['firefly-calibration'])
+        record = touch.command(touch.CALIBRATION, payload)
+        # code 6, size 12, then address, maximum size and provider, little-endian.
+        self.assertEqual(record.hex(), '06000000' '0c000000' '00001000' '00050000' '05000000')
+        container = struct.pack('<II', touch.MAGIC, 1) + record
+        self.assertEqual(touch.decode_container(container), [(touch.CALIBRATION, payload)])
 
     def test_register_packets_have_exact_wire_layout(self):
         self.assertEqual(touch.register_packet(0x12345678, 0xffffffff, 1).hex(),

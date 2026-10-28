@@ -62,7 +62,7 @@ def main():
     adt = commands.add_parser('capture-adt', help='save a fresh recovery ADT privately')
     adt.add_argument('--output', type=Path, required=True)
     mixin = commands.add_parser('mixin', help='prepare a data-only private mixin')
-    for name in ('adt', 'firmware-dir', 'output'):
+    for name in ('firmware-dir', 'output'):
         mixin.add_argument('--' + name, type=Path, required=True)
     for action in ('status', 'diagnostics', 'targets', 'destination', 'prepare', 'install-root', 'handoff', 'abort'):
         command = commands.add_parser(action, help='invoke the device-owned ' + action + ' operation')
@@ -148,7 +148,7 @@ def main():
                 result = {'saved': str(args.output), 'bytes': len(data)}
             elif args.action == 'mixin':
                 adapter = load()
-                archive, result = adapter.prepare_mixin(args.adt, args.firmware_dir, args.output)
+                archive, result = adapter.prepare_mixin(args.firmware_dir, args.output)
                 result = {**result, 'path': str(archive)}
             else:
                 adapter, device = choose()

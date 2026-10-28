@@ -32,10 +32,7 @@ def launch(manifest=None, *, directory=None, target=None, allow_firmware_downloa
         firmware = adapter.firmware_inputs(clock, progress, allow_download=allow_firmware_download)
         with tempfile.TemporaryDirectory(prefix='launch-',dir=private) as temporary:
             work = Path(temporary)
-            adt = work / 'device.adt'
-            adt.write_bytes(adapter.capture_adt(device))
-            adt.chmod(0o600)
-            mixin, receipt = adapter.prepare_mixin(adt,firmware,work/'mixin')
+            mixin, receipt = adapter.prepare_mixin(firmware,work/'mixin')
             with mixin.open('rb') as source:
                 client.call('prepare',{'release':record['release'],**receipt},source=source,
                             size=receipt['bytes'],timeout=180)

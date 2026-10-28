@@ -251,10 +251,7 @@ def install(manifest=None, *, input_fn=input, progress=None):
             if firmware is None:
                 firmware = adapter.firmware_inputs(clock, progress)
             progress.phase('Preparing device hardware…')
-            adt = work / 'device.adt'
-            adt.write_bytes(adapter.capture_adt(device))
-            adt.chmod(0o600)
-            mixin, mixin_record = adapter.prepare_mixin(adt, firmware, work / 'mixin')
+            mixin, mixin_record = adapter.prepare_mixin(firmware, work / 'mixin')
             with mixin.open('rb') as source:
                 client.call('prepare', {'release': record['release'], **mixin_record},
                             source=source, size=mixin_record['bytes'], timeout=180)

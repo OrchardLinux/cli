@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Convert local J71b touch firmware and ADT calibration to Z2FW.
+"""Convert J71b touch firmware to Z2FW with calibration records.
+
+The file is the same for every J71b: apple_z2 fills each calibration record
+from the DT properties m1n1 copies from the ADT at boot.
 
 Packet layouts/Z2FW framing informed by Corellium Project Sandcastle and
 Pauli1Go's GPL makez2fw (944541e67b4c603df328c77d30093551de802c17).
@@ -13,13 +16,13 @@ from pathlib import Path
 import plistlib
 import struct
 
-from orchard_cli.apple.adt_tree import parse, u32s
 from orchard_cli.apple.osserialize import apple_xml
 
 MAGIC = 0x5746325a
-INIT, SEND, WAIT, CONFIG = 0, 1, 3, 4
-PROVIDERS = {'multi-touch-calibration', 'multitouch-to-display-offset',
-             'firefly-calibration', 'pressure-effect-correction'}
+INIT, SEND, WAIT, CONFIG, CALIBRATION = 0, 1, 3, 4, 6
+# apple_z2 calibration provider IDs (drivers/input/touchscreen/apple_z2.c).
+PROVIDERS = {'multi-touch-calibration': 0, 'multitouch-to-display-offset': 4,
+             'firefly-calibration': 5, 'pressure-effect-correction': 6}
 
 
 def uint(value, name, maximum=0xffffffff):
@@ -69,20 +72,6 @@ def decode_blob(packet):
     return address, payload
 
 
-def calibration_packet(address, data):
-    address = uint(address, 'calibration address')
-    if not data or len(data) > 0x40000 or address + ((len(data)+3)&~3) > 0x100000000:
-        raise ValueError('Calibration size/address out of bounds')
-    padded = data + b'\0' * (-len(data) % 4)
-    fields = struct.pack('>H', len(padded)//4-1) + xe32(address)
-    packet = (b'\x18\xe1\x30\x01' + fields + struct.pack('>H', sum(fields))
-              + swapped(padded) + xe32(sum(data) & 0xffffffff))
-    parsed_address, parsed_data = decode_blob(packet)
-    if parsed_address != address or parsed_data != padded:
-        raise ValueError('Calibration encode/decode roundtrip mismatch')
-    return packet
-
-
 def register_packet(address, mask, value):
     fields = xe32(uint(address, 'register address')) + xe32(uint(mask, 'register mask'))
     fields += xe32(uint(value, 'register value'))
@@ -104,7 +93,7 @@ def decode_container(blob):
         code, size = struct.unpack_from('<II', blob, pos)
         pos += 8
         next_pos = (pos+size+3)&~3
-        if code not in (INIT, SEND, WAIT, CONFIG) or next_pos > len(blob):
+        if code not in (INIT, SEND, WAIT, CONFIG, CALIBRATION) or next_pos > len(blob):
             raise ValueError('Unknown or truncated Z2FW command')
         if any(blob[pos+size:next_pos]):
             raise ValueError('Nonzero Z2FW padding')
@@ -113,13 +102,9 @@ def decode_container(blob):
     return records
 
 
-def convert(profile, config, properties):
+def convert(profile, config):
     if profile.get('PreconstructedBootloadPacketType') != 'K1HBPP14' or config.get('Protocol') != 'Z2':
         raise ValueError('Unexpected packet type or protocol')
-    if properties.get('hid-merge-personality', b'').rstrip(b'\0') != b'K1F19,4':
-        raise ValueError('Live touch profile is not K1F19,4')
-    if u32s(properties.get('hbpp-version', b'')) != [0x104]:
-        raise ValueError('Live HBPP version is not 0x104')
     payload = profile.get('Constructed Firmware')
     if not isinstance(payload, bytes):
         raise ValueError('Expected data-form constructed firmware')
@@ -130,7 +115,7 @@ def convert(profile, config, properties):
     if not isinstance(calibration, list) or len(calibration) != 4:
         raise ValueError('Expected exactly four calibration entries')
     names = [item.get('Provider') for item in calibration]
-    if set(names) != PROVIDERS or len(set(names)) != len(names):
+    if set(names) != set(PROVIDERS) or len(set(names)) != len(names):
         raise ValueError('Missing, duplicate, or unsupported calibration provider')
     if not isinstance(config.get('Power Off On Reset'), bool):
         raise ValueError('Power Off On Reset must be a boolean')
@@ -154,18 +139,16 @@ def convert(profile, config, properties):
     addresses = []
     for item in calibration:
         name = item['Provider']
-        data = properties.get(name)
         maximum = uint(item['Max Size'], 'calibration maximum', 0x40000)
-        if not isinstance(data, bytes) or not data or len(data) > maximum or data.startswith(b'syscfg/'):
-            raise ValueError('Missing, oversized, or unresolved calibration: ' + name)
+        if not maximum:
+            raise ValueError('Empty calibration range: ' + name)
         address = uint(item['Address'], 'calibration address')
-        end = address + ((len(data)+3)&~3)
+        end = address + ((maximum+3)&~3)
         if end > 0x100000000 or any(address < b and a < end for a, b in addresses):
             raise ValueError('Overlapping or overflowing calibration ranges')
         addresses.append((address, end))
-        records.append((SEND, calibration_packet(address, data)))
-        providers.append({'provider': name, 'bytes': len(data), 'maximum': maximum,
-                          'address': address})
+        records.append((CALIBRATION, struct.pack('<III', address, maximum, PROVIDERS[name])))
+        providers.append({'provider': name, 'maximum': maximum, 'address': address})
     boot = config.get('Boot Sequence')
     if not isinstance(boot, list) or len(boot) != 4:
         raise ValueError('Unexpected boot sequence shape')
@@ -184,24 +167,18 @@ def convert(profile, config, properties):
                     'command_sequence': [c for c, p in records]}
 
 
-def prepare(firmware: Path, adt_path: Path, output_path: Path, report_path: Path):
+def prepare(firmware: Path, output_path: Path, report_path: Path):
     output_path = output_path.resolve()
     report_path = report_path.resolve()
     if (output_path.name != 'j71b-fwstart.z2fw' or
             output_path == report_path or output_path.exists() or report_path.exists()):
         raise ValueError('Choose unused output and report paths for j71b-fwstart.z2fw')
-    adt = parse(adt_path.read_bytes())
-    if adt.properties.get('model', b'').rstrip(b'\0') != b'iPad7,5':
-        raise ValueError('ADT does not describe iPad7,5')
-    nodes = [n for p, n in adt.walk() if p == '/device-tree/arm-io/spi3/multi-touch']
-    if len(nodes) != 1:
-        raise ValueError('No unique J71b touch node')
     blob = firmware.read_bytes()
     profiles = plistlib.loads(blob)
     if set(profiles) != {'K1F19,4'}:
         raise ValueError('Unexpected profile set')
     profile = profiles['K1F19,4']
-    output, report = convert(profile, apple_xml(profile['Firmware Config']), nodes[0].properties)
+    output, report = convert(profile, apple_xml(profile['Firmware Config']))
     os.umask(0o077)
     output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     report_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -209,8 +186,7 @@ def prepare(firmware: Path, adt_path: Path, output_path: Path, report_path: Path
     with os.fdopen(fd, 'wb') as stream:
         stream.write(output)
     report.update(name=output_path.name, sha256=hashlib.sha256(output).hexdigest(),
-                  bytes=len(output), source_sha256=hashlib.sha256(blob).hexdigest(),
-                  adt_sha256=hashlib.sha256(adt_path.read_bytes()).hexdigest())
+                  bytes=len(output), source_sha256=hashlib.sha256(blob).hexdigest())
     fd = os.open(report_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump(report, stream, indent=2)
@@ -221,11 +197,10 @@ def prepare(firmware: Path, adt_path: Path, output_path: Path, report_path: Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--firmware', type=Path, required=True)
-    parser.add_argument('--adt', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
-    receipt = prepare(args.firmware, args.adt, args.output, args.report)
+    receipt = prepare(args.firmware, args.output, args.report)
     print(json.dumps({'output': str(args.output), 'bytes': receipt['bytes'],
                       'sha256': receipt['sha256'], 'receipt': str(args.report)}, indent=2))
 

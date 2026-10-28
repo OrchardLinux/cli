@@ -7,18 +7,15 @@ from pathlib import Path
 import tempfile
 
 from orchard_cli.staging import stage as stage_firmware
-from orchard_hardware.apple.adt import validate as validate_adt
 from orchard_cli.integrity import digest
 from .touch import prepare as prepare_touch
 
 from .config import MANIFEST, APPLE_PRODUCT
 
 
-def verify(directory: Path, manifest: Path, adt: Path) -> dict:
+def verify(directory: Path, manifest: Path) -> dict:
     record = json.loads((directory / 'firmware.json').read_text())
-    device_id = f'{validate_adt(adt.read_bytes()):016x}'
     if (record.get('schema') != 1 or record.get('profile') != 'j71b' or
-            record.get('device_id') != device_id or record.get('adt_sha256') != digest(adt) or
             record.get('manifest_sha256') != digest(manifest)):
         raise ValueError('Prepared firmware identity differs')
     files = record['files']
@@ -47,7 +44,7 @@ def check_outdir(outdir: Path):
         raise ValueError('Outdir must be absent or an empty directory')
 
 
-def prepare(adt: Path, firmware_dir: Path, outdir: Path) -> Path:
+def prepare(firmware_dir: Path, outdir: Path) -> Path:
     manifest = MANIFEST
     spec = json.loads(manifest.read_text())
     if spec.get('device') != APPLE_PRODUCT:
@@ -59,7 +56,6 @@ def prepare(adt: Path, firmware_dir: Path, outdir: Path) -> Path:
     outdir = outdir.resolve()
     if outdir == firmware_dir or firmware_dir in outdir.parents:
         raise ValueError('Output must not be inside the firmware inputs')
-    device_id = f'{validate_adt(adt.read_bytes()):016x}'
     source = next(item for item in spec['extracted_inputs'] if item['name'] == 'J71b.mtprops')
     matches = [path for path in firmware_dir.rglob(source['name'])
                if path.is_file() and not path.is_symlink() and digest(path) == source['sha256']]
@@ -70,7 +66,7 @@ def prepare(adt: Path, firmware_dir: Path, outdir: Path) -> Path:
         work = Path(temporary)
         touch_dir = work / 'touch'
         touch_dir.mkdir()
-        prepare_touch(matches[0], adt, touch_dir / 'j71b-fwstart.z2fw', touch_dir / 'touch.json')
+        prepare_touch(matches[0], touch_dir / 'j71b-fwstart.z2fw', touch_dir / 'touch.json')
         count = stage_firmware(manifest, [firmware_dir, touch_dir],
                                [touch_dir / 'touch.json'], work / 'firmware')
         expected_count = len(spec['files']) + len(spec['generated'])
@@ -81,10 +77,9 @@ def prepare(adt: Path, firmware_dir: Path, outdir: Path) -> Path:
             if path.is_file():
                 records[path.relative_to(work / 'firmware').as_posix()] = {
                     'bytes': path.stat().st_size, 'sha256': digest(path)}
-        receipt = {'schema': 1, 'profile': 'j71b', 'device_id': device_id,
-                   'manifest_sha256': digest(manifest), 'adt_sha256': digest(adt), 'files': records}
+        receipt = {'schema': 1, 'profile': 'j71b', 'manifest_sha256': digest(manifest), 'files': records}
         (work / 'firmware.json').write_text(json.dumps(receipt, indent=2) + '\n')
-        verify(work, manifest, adt)
+        verify(work, manifest)
         check_outdir(outdir)
         os.replace(work, outdir)
     return outdir
