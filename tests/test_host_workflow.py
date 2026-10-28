@@ -45,7 +45,12 @@ class HostWorkflow(unittest.TestCase):
             with self.subTest(filesystem=filesystem):
                 self.guided_run(filesystem)
 
-    def guided_run(self, filesystem):
+    def test_guided_run_with_cache_hit_and_miss(self):
+        for cached in (True, False):
+            with self.subTest(cached=cached):
+                self.guided_run('ext4', cached=cached)
+
+    def guided_run(self, filesystem, cached=None):
         from contextlib import contextmanager
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as directory:
@@ -76,7 +81,9 @@ class HostWorkflow(unittest.TestCase):
                 prepared = installed = handed_off = formatted = False
                 def call(self, operation, request=None, **kwargs):
                     if operation == 'status':
-                        return {'release': '1.0', 'boot_id': BOOT, 'ecid':1, 'profile':'device', 'ready': self.handed_off}
+                        return {'release': '1.0', 'boot_id': BOOT, 'ecid':1, 'profile':'device',
+                                'ready': self.handed_off,
+                                'capabilities': ['root-image-cache-v1'] if cached is not None else []}
                     if operation == 'prepare':
                         assert not self.prepared and kwargs['source'].read() == b'private-data'
                         self.prepared = True
@@ -98,10 +105,20 @@ class HostWorkflow(unittest.TestCase):
                                 'filesystem_uuid': '11111111-1111-4111-8111-111111111111'}
                     if operation == 'destination':
                         assert request['selection_token'] == ('new-token' if self.formatted else 'token')
+                        assert request.get('cache_root', False) == (cached is not None)
                         return {'exists': False, 'identity': None, 'free_bytes': 10 * 1024**3,
                                 'reclaimable_bytes': 0, 'needed_bytes': 2 * 1024**3, 'inodes_sufficient': True}
+                    if operation == 'root-cache':
+                        assert self.prepared and not self.installed and cached is not None
+                        assert 'source' not in kwargs and request['cache_root'] is True
+                        return {'cached': cached, 'sha256': 'root-digest', 'bytes': 11}
                     if operation == 'install':
-                        assert self.prepared and not self.installed and kwargs['source'].read() == b'root-stream'
+                        assert self.prepared and not self.installed
+                        if cached is True:
+                            assert request['root_cache'] == 'reuse' and 'source' not in kwargs
+                        else:
+                            assert kwargs['source'].read() == b'root-stream'
+                            assert request.get('root_cache') == ('store' if cached is False else None)
                         self.installed = True
                         return {'status': 'complete'}
                     if operation == 'handoff':

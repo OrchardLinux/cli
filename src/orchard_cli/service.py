@@ -15,6 +15,9 @@ from .releases import default_manifest, resolve
 from .devices import choose
 
 
+ROOT_CACHE_CAPABILITY = 'root-image-cache-v1'
+
+
 def ask(clock, prompt, input_fn=input):
     with clock.exclude('input'):
         return input_fn(prompt).strip()
@@ -58,7 +61,8 @@ def initialize_partition(client, clock, observation, row, report_path, *, input_
     return refreshed, matches[0]
 
 
-def select_destination(client, clock, *, input_fn=input, output=print, directory='linux', format_report=None):
+def select_destination(client, clock, *, input_fn=input, output=print, directory='linux', format_report=None,
+                       cache_root=False):
     observation = client.call('targets')
     rows = observation['partitions']
     if not rows:
@@ -83,7 +87,11 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
         raise ValueError('Selected partition has an unsupported signature; nothing was formatted')
     while True:
         request = {'selection_token': observation['selection_token'], 'target': row['id'], 'directory': directory}
-        existing = client.call('destination', request)
+        if cache_root:
+            request['cache_root'] = True
+        # Cache-aware inspection may hash a large archive on the device.
+        existing = (client.call('destination', request, timeout=1200) if cache_root
+                    else client.call('destination', request))
         replace = existing['exists']
         if replace:
             output(f'/{directory} already exists.')
@@ -96,11 +104,17 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
                 continue
             if action != '1':
                 raise ValueError('Installation cancelled; nothing was deleted')
-        available = existing['free_bytes'] + (existing['reclaimable_bytes'] if replace else 0)
+        cache_reclaimable = existing.get('cache_reclaimable_bytes', 0) if cache_root else 0
+        if type(cache_reclaimable) is not int or cache_reclaimable < 0:
+            raise ValueError('Invalid device cache capacity estimate; nothing was deleted')
+        available = (existing['free_bytes'] + (existing['reclaimable_bytes'] if replace else 0)
+                     + cache_reclaimable)
         needed = existing['needed_bytes']
         output('Installation plan:')
         output(f'  Destination: /{directory}')
         label = 'Available after replacement' if replace else 'Available'
+        if cache_reclaimable:
+            label += ' and cache cleanup' if replace else ' after cache cleanup'
         output(f'  {label}: {available / 1024**3:.1f} GiB')
         output(f'  Estimated needed, including margin: {needed / 1024**3:.1f} GiB')
         if available < needed or not existing['inodes_sufficient']:
@@ -108,7 +122,7 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
                              'Free space or choose another partition or directory.')
         if replace:
             phrase = 'replace ' + directory
-            output('No backup will be created. Other directories will not be touched.')
+            output('No backup will be created. Other installation directories will not be touched.')
             output('If installation fails, the deleted contents cannot be restored.')
         else:
             phrase = 'install ' + directory
@@ -116,6 +130,27 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
         if confirmation != phrase:
             raise ValueError('Installation destination was not confirmed')
         return {**request, 'replace': replace, 'destination_identity': existing['identity']}
+
+
+def install_root(client, destination, receipt, path, progress, *, cache_enabled=False):
+    """Negotiate public root reuse; device paths and validation remain device-owned."""
+    request = {**destination, **receipt}
+    if cache_enabled:
+        progress.phase('Checking device root-image cache')
+        cached = client.call('root-cache', request, timeout=1200)
+        if (not isinstance(cached, dict) or type(cached.get('cached')) is not bool
+                or cached.get('sha256') != receipt['sha256']
+                or type(cached.get('bytes')) is not int or cached['bytes'] != receipt['bytes']):
+            raise ValueError('Device root-cache response does not match the selected image')
+        request['root_cache'] = 'reuse' if cached['cached'] else 'store'
+        if cached['cached']:
+            progress.phase('Using verified cached root image; extracting locally')
+            # No stdin payload, and no automatic streaming retry if the cache
+            # changes or installation fails after the read-only probe.
+            return client.call('install', request, timeout=1200)
+        progress.phase('Streaming root image and saving it in the device cache')
+    with path.open('rb') as source:
+        return client.call('install', request, source=source, size=receipt['bytes'], timeout=1200)
 
 
 def save_report(path, report):
@@ -259,12 +294,13 @@ def install(manifest=None, *, input_fn=input, progress=None):
                 client.call('prepare', {'release': record['release'], **mixin_record},
                             source=source, size=mixin_record['bytes'], timeout=180)
             root_path = record.get('default_root', '/linux')
+            capabilities = status.get('capabilities', [])
+            cache_enabled = isinstance(capabilities, list) and ROOT_CACHE_CAPABILITY in capabilities
             destination = select_destination(client, clock, input_fn=input_fn, directory=root_path.lstrip('/'),
-                                             format_report=private / 'last-format.json')
+                                             format_report=private / 'last-format.json', cache_root=cache_enabled)
             progress.phase('Installing ' + record.get('name', 'Linux') + '…')
-            with assets['root'].open('rb') as source:
-                result = client.call('install', {**destination, **record['assets']['root']},
-                                     source=source, size=record['assets']['root']['bytes'], timeout=1200)
+            result = install_root(client, destination, record['assets']['root'], assets['root'],
+                                  progress, cache_enabled=cache_enabled)
             snapshot = clock.result()
             save_report(private / 'last-install.json', {
                 **identity, 'installed': True, 'ready': None, 'release': record['release'],

@@ -29,6 +29,18 @@ orchard install omarchy-a
 
 The registered name stores a URL. Each resolution fetches the current index; verified images are cached by SHA-256. Publishing a new distro index updates future installations, not an already installed operating system.
 
+### Reinstalling the same image
+
+With a recovery image that supports root-image caching, Orchard retains a verified
+public root archive on the selected Linux-data partition, outside the installed
+system directory. Reinstalling the same image uses that cache instead of sending
+the archive over USB again. Changed, missing or corrupt images are transferred
+in full. The progress output identifies cache verification and local extraction.
+
+No extra partition is needed. Cache reuse still performs local verification and
+extraction; it is not an in-place upgrade or a backup of the replaced directory.
+Older recovery images continue to use the normal streaming installation path.
+
 ## Launch an installed system
 
 Connect the device in DFU mode, then run:

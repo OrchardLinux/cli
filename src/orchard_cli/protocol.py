@@ -21,7 +21,7 @@ class Client:
         self.ssh, self.progress = connection.argv, progress
 
     def call(self, operation, request=None, *, source=None, size=0, timeout=120):
-        if operation not in ('status', 'prepare', 'targets', 'destination', 'install', 'handoff', 'diagnostics', 'abort', 'bootstrap', 'revoke-ssh', 'format-target', 'installations', 'launch'):
+        if operation not in ('status', 'prepare', 'targets', 'destination', 'root-cache', 'install', 'handoff', 'diagnostics', 'abort', 'bootstrap', 'revoke-ssh', 'format-target', 'installations', 'launch'):
             raise ValueError('Unsupported phase operation')
         try:
             self.connection.check()
@@ -29,6 +29,7 @@ class Client:
             raise DeviceError(str(error)) from error
         payload = base64.urlsafe_b64encode(json.dumps({'protocol': PROTOCOL, **(request or {})}).encode()).decode()
         argv = self.ssh + ['/usr/bin/orchard-device ' + operation + ' ' + payload]
+        self.progress.reset_device_progress()
         process = subprocess.Popen(argv, stdin=subprocess.PIPE if source else subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         records, errors, stderr = [], [], []
@@ -89,6 +90,7 @@ class Client:
             if process.poll() is None:
                 process.kill()
                 process.wait()
+            self.progress.reset_device_progress()
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream:
                     stream.close()

@@ -13,12 +13,12 @@ Images expose `orchard-device` and image-owned generic `ready`. Omarchy-specific
 
 Initial USB serial invokes the versioned `orchard-device bootstrap BASE64_JSON` operation with a public key. The runtime owns authorization, daemon/PID/key-file state and startup; it returns the host key and endpoint. The host only pins that response and waits for authenticated connectivity. No device filesystem or service-management shell snippets belong in the host.
 
-Authenticated USB-network SSH invokes `orchard-device OPERATION BASE64_JSON`. Requests include `protocol: 1`. `prepare` and `install` carry their byte stream on stdin. Other operations do not consume payload data.
+Authenticated USB-network SSH invokes `orchard-device OPERATION BASE64_JSON`. Requests include `protocol: 1`. `prepare` and streamed `install` calls carry their byte stream on stdin. A capability-negotiated cached `install` has no stdin payload. Other operations do not consume payload data.
 
 Stdout is newline-delimited JSON:
 
 - `phase`: named device activity, no fabricated percentage.
-- `progress`: a bounded descriptive message.
+- `progress`: a bounded descriptive message, or structured cached-extraction byte progress.
 - `result`: one completed operation result.
 - `error`: actionable error, with `retry: false`.
 
@@ -33,8 +33,9 @@ All records include `protocol: 1`. Lost connections during mutations mean unknow
 | `prepare` | release, bytes, sha256 + mixin stdin | Verify fresh-ADT binding/data allowlist; apply in RAM, prepare hardware once, and clean owned leftover staging before target selection. |
 | `targets` | none | Boot ID, device-issued selection token, capacity estimate and GPT Linux-data partition/signature descriptions; free space for verified ext4. |
 | `format-target` | token, target ID, boot ID, operation ID, explicit confirmation | Once per recovery boot after preparation: revalidate a Linux-data target without recognized signatures, create ext4 without force/discard, verify UUID and restore fencing. Return a matching receipt; invalidate the old selection. |
-| `destination` | token, target ID, relative directory | Read-only inspection; return existence, destination identity, free/reclaimable bytes, estimated needed bytes and inode sufficiency. No ownership is inferred from installation markers. |
-| `install` | selected target/directory, destination_identity, explicit replace boolean, bytes, sha256 + root stdin | Revalidate selection; stream into fresh staging, verify, apply mixin and promote. |
+| `destination` | token, target ID, relative directory, optional `cache_root: true` | Read-only inspection; return existence, destination identity, free/reclaimable bytes, estimated needed bytes and inode sufficiency. Cache-aware estimates also return separately reclaimable owned cache bytes. No ownership is inferred from installation markers. |
+| `root-cache` | selected target/directory, bytes, sha256 | With `root-image-cache-v1` capability: read-only verification of the exact public root archive. Returns `cached` (boolean), `bytes` and `sha256`. |
+| `install` | selected target/directory, destination_identity, explicit replace boolean, bytes, sha256; optional `root_cache: store` or `reuse` | Revalidate selection; extract into fresh staging, verify, apply mixin and promote. Legacy/`store` calls send root stdin; `reuse` calls send no payload. |
 | `handoff` | none | Recheck the completed installation, preserve diagnostics and ask recovery PID 1 to switch root. |
 | `diagnostics` | none | Phase/failure state and bounded kernel/system logs. |
 | `abort` | none | Device-owned incomplete-staging cleanup, unmount/fence storage, retain used-phase guards and require a fresh recovery boot. |
@@ -42,11 +43,47 @@ All records include `protocol: 1`. Lost connections during mutations mean unknow
 
 Host code must not infer device paths or encode module loads, filesystem offsets, mounts, permissions or PID 1 commands. Target IDs are displayable identifiers, not host-authored storage paths.
 
+## Device root-image cache
+
+Only use cache operations when the installer advertises `root-image-cache-v1`
+in `status.capabilities`. Otherwise the host retains the existing streaming
+workflow. Old hosts may omit all cache fields when using a new runtime.
+
+The host requests cache-aware capacity estimates before confirmation, then
+probes the selected partition using the exact release root hash and size. It
+checks all probe response fields before choosing `reuse` or `store`. It never
+sends device cache paths. A verified hit skips the USB root payload, but not
+local integrity checking or extraction. A miss transfers the whole image;
+there is no delta-update protocol.
+
+The runtime owns the persistent cache outside the installed root and rechecks
+cached bytes before replacement. Store mode retains only a verified public
+archive; private firmware/mixins remain separate. Missing or corrupt completed
+entries are cache misses, while unsafe storage paths fail closed. Incomplete
+entries are never cache hits. Capacity checks include the compressed archive,
+and cleanup is limited to owned cache entries. Replacing the installation
+directory does not remove this cache.
+
+Progress identifies cache verification, uploading and local extraction. During
+cached extraction, optional `progress` records carry `phase: cached-extraction`,
+integer `bytes` and `total` for compressed bytes consumed, and boolean `complete`.
+An initial zero starts the meter; intermediate counts are monotonic and below
+the fixed total. Only a successful extractor completion emits the total with
+`complete: true`. This does not mean installation finalization or boot has
+completed. The host labels the rate as cached extraction, not USB transfer,
+limits terminal refreshes and leaves failed/unfinished operations below 100%.
+Old phase-only runtimes remain supported; malformed or unknown events stay in
+diagnostics rather than producing a misleading meter.
+
+A failed or disconnected install is never automatically retried with a stream,
+even after a successful cache probe. Cache support is not an installation backup
+or a change to replacement confirmation semantics.
+
 ## Streaming safety
 
 - Root size, digest, compression and expansion limit are baked into recovery from the public release receipt.
 - Package-defined privileged entries have a public metadata manifest. Producers validate contents before restoring special modes from pacman MTREE; runtime verifies content, UID/GID and modes before activation. Missing `sudo` setuid/root ownership is a finalization error, not a broken system to promote.
-- Decode Zstandard and extract concurrently with incoming bytes; no temporary compressed archive.
+- Decode Zstandard and extract concurrently with incoming bytes. Negotiated `store` mode also retains a temporary compressed archive and promotes it only after validation; legacy streaming retains no archive. `reuse` extracts a verified local archive instead.
 - All file writes use no-follow directory descriptors; links are deferred. Traversal, duplicate paths, special files, reserved metadata and escaping hardlinks are rejected.
 - Verify compressed-byte count/digest and decoder completion before creating links or promoting. Preserve file ownership, modes and timestamps.
 - Replacement requires explicit approval and matching destination identity. Delete the selected directory before extraction; never create an automatic backup. Reject symlinks, non-directories and nested mounts. Estimate required bytes as expanded payload × 1.2 + 1 GiB and check free inodes (archive member count + 1024; legacy fallback 65536 + 1024). Recheck actual capacity after deletion. Failures must warn that replacement deletion cannot be undone.
