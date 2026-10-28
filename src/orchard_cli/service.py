@@ -11,7 +11,7 @@ from .state import exclusive_operation, private_directory
 from .contracts import Adapter
 from .progress import Clock, Progress
 from .protocol import Client, DeviceError
-from .releases import default_manifest, resolve
+from .releases import default_manifest, record_launcher, resolve
 from .devices import choose
 
 
@@ -205,10 +205,32 @@ def finish_ssh_access(client, adapter: Adapter, status, report, path, clock, inp
     progress.phase('SSH access revoked for this boot; cached credentials removed')
 
 
+def caveats(adapter):
+    """What to know before installing: features that are not working, free-text caveats."""
+    import orchard_hardware
+    labels = orchard_hardware.features()
+    groups = {'missing': 'Not working yet', 'partial': 'Partly working', 'untested': 'Untested'}
+    rows = []
+    for state, title in groups.items():
+        names = [label for name, label in labels.items() if adapter.FEATURES.get(name) == state]
+        if names:
+            rows.append(f'- {title}: ' + ', '.join(names))
+    lines = ['Caveats:', *rows, *(f'- {text}' for text in adapter.CAVEATS)] if rows or adapter.CAVEATS else []
+    if adapter.STATUS != 'supported':
+        lines.append('This device has not been tested yet, proceed at your own risk!')
+    return lines
+
+
 @exclusive_operation
 def install(manifest=None, *, input_fn=input, progress=None):
     clock, progress = Clock(), progress or Progress()
     adapter, device = choose()  # Definition of installation timing begins here.
+    if not adapter.INSTALL:
+        raise ValueError(f'Installing on the {adapter.NAME} is not available yet; '
+                         'RAM boot is available for testing')
+    progress.phase(f'{adapter.NAME} ({adapter.STATUS})')
+    for line in caveats(adapter):
+        progress.phase(line)
     answer = ask(clock, f'Install Linux on {adapter.NAME}? [Y/n] ', input_fn)
     if answer.lower() not in ('', 'y', 'yes'):
         progress.phase('Cancelled; no download or device mutation performed')
@@ -251,10 +273,7 @@ def install(manifest=None, *, input_fn=input, progress=None):
             if firmware is None:
                 firmware = adapter.firmware_inputs(clock, progress)
             progress.phase('Preparing device hardware…')
-            adt = work / 'device.adt'
-            adt.write_bytes(adapter.capture_adt(device))
-            adt.chmod(0o600)
-            mixin, mixin_record = adapter.prepare_mixin(adt, firmware, work / 'mixin')
+            mixin, mixin_record = adapter.prepare_mixin(firmware, work / 'mixin')
             with mixin.open('rb') as source:
                 client.call('prepare', {'release': record['release'], **mixin_record},
                             source=source, size=mixin_record['bytes'], timeout=180)
@@ -265,6 +284,8 @@ def install(manifest=None, *, input_fn=input, progress=None):
             with assets['root'].open('rb') as source:
                 result = client.call('install', {**destination, **record['assets']['root']},
                                      source=source, size=record['assets']['root']['bytes'], timeout=1200)
+            # This installation is launched by the current launcher from now on.
+            record_launcher(adapter.PROFILE, device['ecid'])
             snapshot = clock.result()
             save_report(private / 'last-install.json', {
                 **identity, 'installed': True, 'ready': None, 'release': record['release'],

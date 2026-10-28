@@ -24,14 +24,6 @@ except ImportError:
 from . import sources, kernel as kernels
 
 _BASE_PRODUCER = kernels.build_base
-# These two old helper modules had the identical base producer below. Their
-# whole-file hashes must remain usable, without making future source-management
-# fixes invalidate compiled kernels. Never reuse them for a changed producer.
-_BASE_V1_PRODUCER = '2404aef309585cb74a49439f7a2df6b1bcb0f24578f765f69ef03f93abab2ec0'
-_BASE_V1_HELPERS = (
-    '01be4f9189af3896c6acdd71b6309a5244d9585d1ff742daaf57dcfd04bc9fe2',
-    'bbe7c3d2431a2069c93cf80d4f942b5f463824adcf2da72516a23721957140f5',
-)
 
 
 def configured_device(directory):
@@ -53,7 +45,7 @@ def configured_device(directory):
             return device
         if (parent / '.git').exists():
             break
-    return 'j71b'
+    return None
 
 
 def digest(path):
@@ -91,38 +83,29 @@ def cache_root():
 
 
 def kernel_base_key(hardware, device, cache):
-    """Same key before and after source checkout; external modules are separate."""
+    """Same key before and after source checkout; external modules are separate.
+
+    The base is per platform, so devices of one platform share it.
+    """
+    platform = kernels.layout(hardware, device)[0]
     tree = kernels.source_tree(hardware, cache, device)
     recipes = recipe_key(hardware, [
-        'kernel/upstream.lock', 'kernel/configs/' + device, 'kernel/patches/' + device,
+        'kernel/upstream.lock', 'kernel/configs/' + platform, 'kernel/series/' + platform,
+        'kernel/series.py', 'kernel/patches',
         'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
         'kernel/stage-modules.py', 'buildenv.py',
     ])
     # Source preparation is already represented by its resulting tree. Hash
     # only the binary/SDK producer, not unrelated functions in kernel.py.
     producer = hashlib.sha256(inspect.getsource(_BASE_PRODUCER).encode()).hexdigest()
-    helpers = (producer, *_BASE_V1_HELPERS) if producer == _BASE_V1_PRODUCER else (producer,)
     sdk = digest(Path(__file__).with_name('kernel_sdk.py'))
     mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
-    keys = [hashlib.sha256((recipes + helper + sdk + tree + mode).encode()).hexdigest()
-            for helper in helpers]
-    components = Path(cache) / 'components-v2'
-    # Prefer a complete matching bundle, then a matching compiled base. Normal
-    # cached_component validation still verifies every reused file's hash.
-    for key in keys:
-        base = components / ('kernel-base-' + device) / key
-        final = components / ('kernel-' + device) / kernel_key(hardware, device, key)
-        if (base / 'component.json').is_file() and (final / 'component.json').is_file():
-            return key
-    for key in keys:
-        if (components / ('kernel-base-' + device) / key / 'component.json').is_file():
-            return key
-    return keys[0]
+    return hashlib.sha256((recipes + producer + sdk + tree + mode).encode()).hexdigest()
 
 
 def kernel_key(hardware, device, base_key):
-    """Device layer: external drivers and final DTB, reusing the compiled base."""
-    recipes = recipe_key(hardware, ['kernel/modules/' + device, 'kernel/devicetree/' + device,
+    """Device layer: DTB selection and external drivers, reusing the compiled base."""
+    recipes = recipe_key(hardware, ['devices/' + device + '/device.toml', 'kernel/modules/' + device,
                                     'kernel/build-modules', 'kernel/stage-modules.py'])
     return hashlib.sha256((base_key + recipes).encode()).hexdigest()
 
@@ -190,7 +173,10 @@ def _build_context(hardware, cache, device):
 
 
 def _check_kernel_recipe(hardware, device):
-    for relative in ('kernel/configs/' + device + '/config', 'kernel/devicetree/' + device + '/build'):
+    if not (hardware / 'kernel/series.py').is_file():
+        raise ValueError(f'Hardware checkout has no kernel series: {hardware}; update hardware')
+    platform = kernels.layout(hardware, device)[0]
+    for relative in ('kernel/configs/' + platform + '/config', 'kernel/series/' + platform):
         if not (hardware / relative).is_file():
             raise ValueError(f'Missing hardware recipe input: {hardware / relative}')
 
@@ -198,10 +184,11 @@ def _check_kernel_recipe(hardware, device):
 def _prepare_kernel(hardware, cache, device):
     """Resolve one coherent kernel/DTB/module bundle under the component lock."""
     components = cache / 'components-v2'
+    platform = kernels.layout(hardware, device)[0]
     base_key = lambda: kernel_base_key(hardware, device, cache)
     def produce_base(stage):
         kernels.build_base(hardware, cache, device, stage / 'kernel')
-    base = cached_component(components, 'kernel-base-' + device, base_key, produce_base) / 'kernel'
+    base = cached_component(components, 'kernel-base-' + platform, base_key, produce_base) / 'kernel'
     def produce_kernel(stage):
         kernels.build_device(hardware, cache, device, base, stage / 'kernel')
     directory = cached_component(components, 'kernel-' + device,
@@ -209,7 +196,7 @@ def _prepare_kernel(hardware, cache, device):
     return directory / 'kernel'
 
 
-def prepare_kernel(hardware=None, cache=None, *, device='j71b'):
+def prepare_kernel(hardware=None, cache=None, *, device):
     """Build/reuse a coherent kernel, DTB and modules, without boot/tool producers.
 
     Defaults to the active hardware package and normal shared Orchard cache.
@@ -221,7 +208,7 @@ def prepare_kernel(hardware=None, cache=None, *, device='j71b'):
         return _prepare_kernel(hardware, cache, device)
 
 
-def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
+def prepare_components(hardware=None, cache=None, *, device, kernel=None,
                        busybox=None, loader=None, pongo=None):
     """Build/reuse components shared by experiments and larger images.
 
@@ -233,7 +220,8 @@ def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
     components = cache / 'components-v2'
     if kernel is None:
         _check_kernel_recipe(hardware, device)
-    if loader is None and not any((hardware / 'boot/m1n1/patches' / device).glob('*.patch')):
+    if loader is None and not any([*(hardware / 'boot/m1n1/patches').glob('*.patch'),
+                                   *(hardware / 'boot/m1n1/patches' / device).glob('*.patch')]):
         raise ValueError(f'Missing loader patches for {device}; add a loader recipe or supply --loader FILE')
     with component_lock(cache):
         if pongo is None:
@@ -254,13 +242,13 @@ def prepare_components(hardware=None, cache=None, *, device='j71b', kernel=None,
         if busybox is None:
             def produce_tools(stage):
                 work = hardware / '.work/tools'
-                work = work / recipe_key(hardware, ['boot/initramfs/j71b/recovery', 'buildenv.py'])
+                work = work / recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py'])
                 if not (work / 'bin/busybox').exists():
-                    command(hardware / 'boot/initramfs/j71b/recovery/build-tools',
+                    command(hardware / 'boot/initramfs/recovery/build-tools',
                             env={**os.environ, 'OMA_RECOVERY_TOOLS_WORK': str(work)})
                 shutil.copyfile(work / 'bin/busybox', stage / 'busybox')
             directory = cached_component(components, 'busybox',
-                lambda: recipe_key(hardware, ['boot/initramfs/j71b/recovery', 'buildenv.py']), produce_tools)
+                lambda: recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py']), produce_tools)
             busybox = directory / 'busybox'
         if loader is None:
             def produce_loader(stage):

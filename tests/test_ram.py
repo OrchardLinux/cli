@@ -19,6 +19,8 @@ class RamTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
+        # Projects name their device; nothing defaults to one.
+        (self.base / 'orchard.toml').write_text('device = "j71b"\n')
         self.hardware = Path(orchard_hardware.__file__).resolve().parent
         self.kernel = self.base / 'kernel'
         modules = self.kernel / 'lib/modules/test-release'
@@ -49,7 +51,7 @@ class RamTests(unittest.TestCase):
                                loader=self.loader, pongo=self.pongo)
 
     def build(self, **kwargs):
-        options = dict(init=self.init, files={'usr/bin/test': self.script}, modules=True)
+        options = dict(init=self.init, files={'usr/bin/test': self.script}, modules=True, device='j71b')
         options.update(kwargs)
         return ram.assemble_ram(self.hardware, self.output, **self.components, **options)
 

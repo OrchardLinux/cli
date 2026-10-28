@@ -11,7 +11,6 @@ import tempfile
 
 from orchard_cli.cache import cache_root
 from orchard_cli.integrity import digest
-from orchard_cli.releases import materialize
 
 TOOL = {'url': 'https://github.com/blacktop/ipsw/releases/download/v3.1.739/ipsw_3.1.739_macOS_arm64.tar.gz',
         'sha256': 'c09e8eba02c332f5b50d15f94383e59dd35646d70f6ea9e78d185e9afda6abc2',
@@ -46,6 +45,8 @@ def hcd_from_binary(data, expected):
 
 
 def tool(clock, progress):
+    # Keep the pure firmware selector usable on-device without download tooling.
+    from orchard_cli.releases import materialize
     supplied = os.environ.get('ORCHARD_IPSW_TOOL') or shutil.which('ipsw')
     if supplied:
         return supplied

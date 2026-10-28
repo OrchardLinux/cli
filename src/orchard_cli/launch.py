@@ -17,7 +17,7 @@ def launch(manifest=None, *, directory=None, target=None, allow_firmware_downloa
     adapter, device = choose()
     if ask(clock, f'Launch an installed system on {adapter.NAME}? [y/N] ', input_fn).lower() not in ('y','yes'):
         return {'cancelled':True}
-    manifest = manifest if manifest is not None else launch_manifest(adapter.PROFILE)
+    manifest = manifest if manifest is not None else launch_manifest(adapter.PROFILE, device.get('ecid'))
     record, assets = resolve(manifest, adapter.PROFILE, progress, clock=clock, purpose='boot')
     if not device['resumed']:
         adapter.boot(device, assets, record, progress)
@@ -32,10 +32,7 @@ def launch(manifest=None, *, directory=None, target=None, allow_firmware_downloa
         firmware = adapter.firmware_inputs(clock, progress, allow_download=allow_firmware_download)
         with tempfile.TemporaryDirectory(prefix='launch-',dir=private) as temporary:
             work = Path(temporary)
-            adt = work / 'device.adt'
-            adt.write_bytes(adapter.capture_adt(device))
-            adt.chmod(0o600)
-            mixin, receipt = adapter.prepare_mixin(adt,firmware,work/'mixin')
+            mixin, receipt = adapter.prepare_mixin(firmware,work/'mixin')
             with mixin.open('rb') as source:
                 client.call('prepare',{'release':record['release'],**receipt},source=source,
                             size=receipt['bytes'],timeout=180)

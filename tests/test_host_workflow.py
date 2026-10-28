@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from orchard_cli.contracts import Connection
 from orchard_cli.state import BootState, DeviceState
@@ -31,7 +31,7 @@ class HostWorkflow(unittest.TestCase):
         self.addCleanup(self.state_patch.stop)
     def test_cancel_before_asset_access_download_or_mutation(self):
         from unittest.mock import Mock
-        adapter = Mock(NAME='Supported tablet', PROFILE='device')
+        adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', CAVEATS=[], FEATURES={})
         with patch('orchard_cli.service.choose', return_value=(adapter, {'mode': 'dfu'})), \
              patch('orchard_cli.service.resolve') as assets:
             result = install(input_fn=lambda _: 'n', progress=Progress(io.StringIO()))
@@ -39,6 +39,27 @@ class HostWorkflow(unittest.TestCase):
             assets.assert_not_called()
             adapter.firmware_inputs.assert_not_called()
             adapter.boot.assert_not_called()
+
+    def test_experimental_device_shows_caveats_and_still_defaults_to_yes(self):
+        from unittest.mock import Mock
+        adapter = Mock(NAME='Untested tablet', PROFILE='device', INSTALL=True, STATUS='experimental',
+                       FEATURES={'touch': 'missing', 'wifi': 'untested', 'display': 'working', 'cellular': 'none'},
+                       CAVEATS=['Bluetooth needs its module vendor chosen per unit.'])
+        prompts = []
+        with patch('orchard_cli.service.choose', return_value=(adapter, {'mode': 'dfu'})), \
+             patch('orchard_cli.service.resolve') as assets:
+            output = io.StringIO()
+            result = install(input_fn=lambda text: prompts.append(text) or 'n', progress=Progress(output))
+        self.assertTrue(result['cancelled'])
+        self.assertEqual(prompts, ['Install Linux on Untested tablet? [Y/n] '])
+        text = output.getvalue()
+        self.assertIn('- Not working yet: Touchscreen', text)
+        self.assertIn('- Untested: Wi-Fi', text)
+        self.assertNotIn('Display', text)
+        self.assertNotIn('Cellular', text)
+        self.assertIn('- Bluetooth needs its module vendor chosen per unit.', text)
+        self.assertIn('not been tested yet, proceed at your own risk', text)
+        assets.assert_not_called()
 
     def test_guided_run_reaches_desktop_with_one_mixin_and_one_root_stream(self):
         for filesystem in ('ext4', 'unformatted'):
@@ -54,7 +75,7 @@ class HostWorkflow(unittest.TestCase):
             image, mixin = root / 'root', root / 'mixin'
             image.write_bytes(b'root-stream')
             mixin.write_bytes(b'private-data')
-            adapter = Mock(NAME='Supported tablet', PROFILE='device')
+            adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', CAVEATS=[], FEATURES={})
             adapter.capture_adt.return_value = b'fresh-adt'
             adapter.prepare_mixin.return_value = (mixin, {'bytes': 12, 'sha256': 'mixin-digest'})
             import threading
@@ -124,6 +145,7 @@ class HostWorkflow(unittest.TestCase):
                 self.assertIsNone(saved['timing']['install_seconds'])
                 return wait_ready(client, progress)
             with patch('orchard_cli.service.choose', return_value=(adapter, {'mode':'dfu', 'location':'opaque', 'ecid':1, 'resumed':False})), \
+                 patch('orchard_cli.service.record_launcher') as recorded, \
                  patch('orchard_cli.service.resolve', side_effect=acquire_assets), \
                  patch('orchard_cli.service.Client', return_value=device), \
                  patch('orchard_cli.state.cache_root', return_value=root), \
@@ -233,7 +255,7 @@ class HostWorkflow(unittest.TestCase):
         from contextlib import contextmanager
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as directory:
-            adapter = Mock(NAME='Supported tablet', PROFILE='device')
+            adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', CAVEATS=[], FEATURES={})
             adapter.REBOOT_MESSAGE = 'A fresh recovery boot is required. Run: orchard install'
             @contextmanager
             def connection(device):
@@ -275,40 +297,46 @@ class HostWorkflow(unittest.TestCase):
                 self.assertEqual(text.count('\n'), 2)
 
     def test_recovery_detection_does_not_require_the_dfu_location(self):
-        from orchard_cli.j71b import adapter
+        from orchard_cli import devices
+        from orchard_cli.apple import device as adapter_module
+        adapter = devices.load('j71b')
         endpoint = {'mode': 'linux', 'location': 'new-enumeration',
                     'product': 'J71b Recovery', 'serial_port': '/dev/recovery', 'ecid': 1, 'boot_id': BOOT}
         original = {'location': 'dfu-enumeration', 'ecid': 1}
-        with patch.object(adapter.usb, 'devices', return_value=[endpoint]):
-            self.assertEqual(adapter.apple_boot.wait_mode(original, 'linux', chip=adapter.CHIP,
+        with patch.object(adapter_module.usb, 'devices', return_value=[endpoint]):
+            self.assertEqual(adapter_module.apple_boot.wait_mode(original, 'linux', chip=adapter.CHIP,
                              board=adapter.BOARD, product=adapter.PRODUCT, seconds=0), endpoint)
-        with patch.object(adapter, 'read_adt', return_value=b'fresh'), \
-             patch.object(adapter, 'validate_adt', return_value=2):
+        with patch.object(adapter_module.adt_capture, 'capture', return_value=b'fresh'), patch.object(adapter_module, 'parse', return_value=Mock(properties={'model': b'iPad7,5\0'})), \
+             patch.object(adapter_module, 'validate_adt', return_value=2):
             with self.assertRaisesRegex(ValueError, 'identity differs'):
                 adapter.capture_adt(original)
 
     def test_recovery_detection_refuses_ambiguous_or_wrong_endpoints(self):
-        from orchard_cli.j71b import adapter
+        from orchard_cli import devices
+        from orchard_cli.apple import device as adapter_module
+        adapter = devices.load('j71b')
         endpoint = {'mode': 'linux', 'location': 'usb',
                     'product': 'J71b Recovery', 'serial_port': '/dev/recovery', 'ecid': 1, 'boot_id': BOOT}
-        with patch.object(adapter.usb, 'devices', return_value=[endpoint, {**endpoint, 'location': 'other'}]):
+        with patch.object(adapter_module.usb, 'devices', return_value=[endpoint, {**endpoint, 'location': 'other'}]):
             with self.assertRaisesRegex(ValueError, 'exactly one target'):
-                adapter.apple_boot.wait_mode({'location': 'usb'}, 'linux', chip=adapter.CHIP,
+                adapter_module.apple_boot.wait_mode({'location': 'usb'}, 'linux', chip=adapter.CHIP,
                                              board=adapter.BOARD, product=adapter.PRODUCT, seconds=0)
-        with patch.object(adapter.usb, 'devices', return_value=[{**endpoint, 'product': 'Other device'}]):
+        with patch.object(adapter_module.usb, 'devices', return_value=[{**endpoint, 'product': 'Other device'}]):
             with self.assertRaisesRegex(RuntimeError, 'observed: linux \\(Other device\\)'):
-                adapter.apple_boot.wait_mode({'location': 'usb'}, 'linux', chip=adapter.CHIP,
+                adapter_module.apple_boot.wait_mode({'location': 'usb'}, 'linux', chip=adapter.CHIP,
                                              board=adapter.BOARD, product=adapter.PRODUCT, seconds=0)
 
     def test_running_recovery_can_be_identified_without_reboot(self):
-        from orchard_cli.j71b import adapter
+        from orchard_cli import devices
+        from orchard_cli.apple import device as adapter_module
+        adapter = devices.load('j71b')
         from unittest.mock import Mock
         endpoint = {'mode': 'linux', 'location': 'usb',
                     'product': 'J71b Recovery', 'serial_port': '/dev/recovery', 'ecid': 1, 'boot_id': BOOT}
-        with patch.object(adapter.usb, 'devices', return_value=[endpoint]), \
-             patch.object(adapter, 'read_adt', return_value=b'fresh'), \
-             patch.object(adapter, 'validate_adt', return_value=1), \
-             patch.object(adapter.apple_boot.pongo, 'upload') as upload:
+        with patch.object(adapter_module.usb, 'devices', return_value=[endpoint]), \
+             patch.object(adapter_module.adt_capture, 'capture', return_value=b'fresh'), patch.object(adapter_module, 'parse', return_value=Mock(properties={'model': b'iPad7,5\0'})), \
+             patch.object(adapter_module, 'validate_adt', return_value=1), \
+             patch.object(adapter_module.apple_boot.pongo, 'upload') as upload:
             device = adapter.discover()
             self.assertTrue(device['resumed'])
             self.assertEqual(device['ecid'], 1)

@@ -25,8 +25,8 @@ class LaunchFlow(unittest.TestCase):
             receipt={'release':'alpine','root_sha256':'a'*64,'directory':'minimal'}
             adapter=Mock(PROFILE='j71b',NAME='iPad')
             adapter.connect.return_value=nullcontext(connection)
-            adapter.capture_adt.return_value=b'fresh ADT'
-            def mixin(adt,firmware,dest):
+            adapter.capture_adt.side_effect=AssertionError('launch must not need the device ADT')
+            def mixin(firmware,dest):
                 dest.mkdir();path=dest/'mixin.tar.gz';path.write_bytes(b'x')
                 return path,{'bytes':1,'sha256':'a'*64}
             adapter.prepare_mixin.side_effect=mixin
@@ -61,7 +61,7 @@ class LaunchFlow(unittest.TestCase):
                 self.assertEqual(sum(c.args[0]=='launch' for c in client.call.call_args_list),1)
                 self.assertEqual(resolve.call_args.kwargs['purpose'],'boot')
                 if manifest is None:
-                    selected_manifest.assert_called_once_with('j71b')
+                    self.assertEqual(selected_manifest.call_args.args[0], 'j71b')
                     self.assertEqual(resolve.call_args.args[0], 'https://example.invalid/j71b.boot.toml')
                 else:
                     selected_manifest.assert_not_called()

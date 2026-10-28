@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 from orchard_cli import sources
 
+import hardware_layout
+
 
 class SourceCacheTests(unittest.TestCase):
     def setUp(self):
@@ -69,8 +71,7 @@ class SourceCacheTests(unittest.TestCase):
     def test_cli_prepares_source_for_unmodified_hardware_builder_without_resetting_edits(self):
         from orchard_cli import kernel
         hardware = self.root / 'hardware'
-        patches = hardware / 'kernel/patches/j71b'
-        patches.mkdir(parents=True)
+        patches = hardware_layout.write(hardware)
         (hardware / 'kernel/upstream.lock').write_text(f'url={self.url}\ncommit={self.commit}\n')
         (self.upstream / 'driver.c').write_text('patched\n')
         patchfile = patches / '0001-driver.patch'
@@ -91,8 +92,7 @@ class SourceCacheTests(unittest.TestCase):
     def test_patch_transition_uses_central_cache_then_retains_incremental_output(self):
         from orchard_cli import build, kernel
         hardware = self.root / 'hardware'
-        patches = hardware / 'kernel/patches/j71b'
-        patches.mkdir(parents=True)
+        patches = hardware_layout.write(hardware)
         (hardware / 'kernel/upstream.lock').write_text(f'url={self.url}\ncommit={self.commit}\n')
         patchfile = patches / '0001-driver.patch'
         def change(text):
@@ -145,8 +145,7 @@ class SourceCacheTests(unittest.TestCase):
         for number, (first, second) in enumerate(cases):
             with self.subTest(number=number):
                 hardware = self.root / ('hardware-' + str(number))
-                patches = hardware / 'kernel/patches/j71b'
-                patches.mkdir(parents=True)
+                patches = hardware_layout.write(hardware)
                 (hardware / 'kernel/upstream.lock').write_text(f'url={self.url}\ncommit={self.commit}\n')
                 def change(content):
                     (self.upstream / 'driver.c').write_bytes(content)
@@ -164,8 +163,7 @@ class SourceCacheTests(unittest.TestCase):
     def test_changed_patches_with_user_edits_cannot_hit_unrelated_cache(self):
         from orchard_cli import build, kernel
         hardware = self.root / 'hardware'
-        patches = hardware / 'kernel/patches/j71b'
-        patches.mkdir(parents=True)
+        patches = hardware_layout.write(hardware)
         (hardware / 'kernel/upstream.lock').write_text(f'url={self.url}\ncommit={self.commit}\n')
         source, output = kernel.prepare_source(hardware, self.cache, 'j71b')
         (source / 'driver.c').write_text('user edit\n')

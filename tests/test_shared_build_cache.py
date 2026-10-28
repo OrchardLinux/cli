@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from orchard_cli import build, sources, kernel
 
+import hardware_layout
+
 
 class SharedBuildCacheTests(unittest.TestCase):
     def setUp(self):
@@ -32,15 +34,13 @@ class SharedBuildCacheTests(unittest.TestCase):
             for name, text in {
                 'kernel/build': 'producer', 'kernel/build-modules': 'external producer',
                 'kernel/stage-modules.py': 'stage',
-                'kernel/configs/j71b/config': 'config',
-                'kernel/devicetree/j71b/overlay': 'dtb',
-                'kernel/devicetree/j71b/build': 'dtb producer',
                 'kernel/modules/j71b/power/driver.c': 'external driver',
                 'kernel/upstream.lock': f'url={self.upstream.as_uri()}\ncommit={self.commit}\n',
             }.items():
                 path = hardware / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text)
+            hardware_layout.write(hardware)
         self.overrides = {}
         for name in ('busybox', 'pongo', 'loader'):
             path = self.root / name
@@ -51,7 +51,7 @@ class SharedBuildCacheTests(unittest.TestCase):
     def produce(self, hardware, cache, device, output, base=None):
         self.assertEqual(cache, self.cache)
         self.assertEqual(device, 'j71b')
-        source = hardware / 'kernel/.work/j71b/source'
+        source = hardware / 'kernel/.work/apple/source'
         if not source.exists():
             sources.checkout(self.upstream.as_uri(), self.commit, source, cache=self.cache)
         output.mkdir(parents=True)
@@ -65,6 +65,9 @@ class SharedBuildCacheTests(unittest.TestCase):
             (module_tree / 'upstream.ko').write_text('upstream module')
             (output / 'sdk').mkdir()
             (output / 'sdk/Module.symvers').write_text('matching symbols')
+            (output / 'dtbs').mkdir()
+            for dtb in ('t8010-j71b', 't8010-j72b'):
+                (output / 'dtbs' / (dtb + '.dtb')).write_text(dtb)
         else:
             self.calls.append('external-modules-and-dtb')
             self.assertTrue((base / 'sdk/Module.symvers').is_file())
@@ -73,13 +76,14 @@ class SharedBuildCacheTests(unittest.TestCase):
             shutil.copytree(base / 'lib', output / 'lib')
             (output / 'lib/modules/test-release/external.ko').write_text(
                 (hardware / 'kernel/modules/j71b/power/driver.c').read_text())
-            (output / 'j71b.dtb').write_text((hardware / 'kernel/devicetree/j71b/overlay').read_text())
+            dtb = kernel.layout(hardware, device)[1]
+            shutil.copyfile(base / 'dtbs' / (dtb + '.dtb'), output / 'j71b.dtb')
 
     def prepare(self, hardware):
         with patch.object(kernel, 'build_base', side_effect=self.produce), \
                 patch.object(kernel, 'build_device', side_effect=lambda hw, cache, device, base, out:
                              self.produce(hw, cache, device, out, base)):
-            return build.prepare_components(hardware, self.cache, **self.overrides)
+            return build.prepare_components(hardware, self.cache, device='j71b', **self.overrides)
 
     def test_fresh_second_checkout_neither_downloads_checks_out_nor_compiles_linux(self):
         first = self.prepare(self.one)
@@ -98,7 +102,7 @@ class SharedBuildCacheTests(unittest.TestCase):
                 patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')), \
                 patch.object(sources, 'checkout', side_effect=AssertionError('source checked out')), \
                 patch.object(build, 'command', side_effect=AssertionError('unrelated producer invoked')):
-            second = build.prepare_kernel(self.two, self.cache)
+            second = build.prepare_kernel(self.two, self.cache, device='j71b')
         self.assertEqual(first['kernel'], second)
         self.assertFalse((self.two / 'kernel/.work').exists())
 
@@ -106,7 +110,7 @@ class SharedBuildCacheTests(unittest.TestCase):
         with patch.object(kernel, 'build_base', side_effect=self.produce), \
                 patch.object(kernel, 'build_device', side_effect=lambda hw, cache, device, base, out:
                              self.produce(hw, cache, device, out, base)):
-            first = build.prepare_kernel(self.one, self.cache)
+            first = build.prepare_kernel(self.one, self.cache, device='j71b')
         second = self.prepare(self.two)
         self.assertEqual(first, second['kernel'])
         self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
@@ -119,68 +123,31 @@ class SharedBuildCacheTests(unittest.TestCase):
                 patch.dict(os.environ, {'ORCHARD_CACHE_DIR': str(self.cache)}), \
                 patch.object(kernel, 'build_base', side_effect=AssertionError('base rebuilt')), \
                 patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')):
-            second = build.prepare_kernel()
+            second = build.prepare_kernel(device='j71b')
         self.assertEqual(first['kernel'], second)
         self.assertFalse((self.two / 'kernel/.work').exists())
 
     def test_cache_misses_and_hits_are_visible_without_changing_identity(self):
         with redirect_stdout(io.StringIO()) as first_log:
             first = self.prepare(self.one)
-        self.assertIn('Building kernel-base-j71b (cache miss):', first_log.getvalue())
+        self.assertIn('Building kernel-base-apple (cache miss):', first_log.getvalue())
         self.assertIn('Building kernel-j71b (cache miss):', first_log.getvalue())
         with redirect_stdout(io.StringIO()) as second_log:
-            second = build.prepare_kernel(self.two, self.cache)
+            second = build.prepare_kernel(self.two, self.cache, device='j71b')
         self.assertEqual(first['kernel'], second)
-        self.assertIn('Reusing kernel-base-j71b:', second_log.getvalue())
+        self.assertIn('Reusing kernel-base-apple:', second_log.getvalue())
         self.assertIn('Reusing kernel-j71b:', second_log.getvalue())
         self.assertNotIn('Building ', second_log.getvalue())
         self.assertEqual(self.calls, ['kernel-base', 'external-modules-and-dtb'])
 
-    def legacy_key(self, helper):
-        # Historical formula, kept independent of the new producer fingerprint.
-        recipes = build.recipe_key(self.one, [
-            'kernel/upstream.lock', 'kernel/configs/j71b', 'kernel/patches/j71b',
-            'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
-            'kernel/stage-modules.py', 'buildenv.py',
-        ])
-        sdk = build.digest(Path(build.__file__).with_name('kernel_sdk.py'))
-        tree = kernel.source_tree(self.one, self.cache, 'j71b')
-        mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
-        return hashlib.sha256((recipes + helper + sdk + tree + mode).encode()).hexdigest()
-
-    def seed_legacy_bundle(self, helper):
-        key = self.legacy_key(helper)
-        components = self.cache / 'components-v2'
-        base = build.cached_component(components, 'kernel-base-j71b', lambda: key,
-            lambda stage: self.produce(self.one, self.cache, 'j71b', stage / 'kernel')) / 'kernel'
-        final_key = build.kernel_key(self.one, 'j71b', key)
-        final = build.cached_component(components, 'kernel-j71b', lambda: final_key,
-            lambda stage: self.produce(self.one, self.cache, 'j71b', stage / 'kernel', base)) / 'kernel'
-        return key, base, final
-
-    def test_old_canonical_and_worker_cache_bundles_survive_source_helper_changes(self):
-        for helper in build._BASE_V1_HELPERS:
-            with self.subTest(helper=helper):
-                key, base, final = self.seed_legacy_bundle(helper)
-                with patch.object(kernel, 'build_base', side_effect=AssertionError('Linux rebuilt')), \
-                        patch.object(kernel, 'build_device', side_effect=AssertionError('modules rebuilt')), \
-                        patch.object(sources, 'checkout', side_effect=AssertionError('source checked out')):
-                    self.assertEqual(build.kernel_base_key(self.two, 'j71b', self.cache), key)
-                    self.assertEqual(build.prepare_kernel(self.two, self.cache), final)
-                self.assertFalse((self.two / 'kernel/.work').exists())
-                shutil.rmtree(self.cache / 'components-v2')
-
-    def test_legacy_cache_is_not_reused_when_base_producer_changes(self):
-        key, _, _ = self.seed_legacy_bundle(build._BASE_V1_HELPERS[0])
-        with patch.object(build.inspect, 'getsource', return_value='changed base producer\n'):
-            self.assertNotEqual(build.kernel_base_key(self.two, 'j71b', self.cache), key)
-
-    def test_reused_legacy_cache_is_still_hash_verified(self):
-        _, base, _ = self.seed_legacy_bundle(build._BASE_V1_HELPERS[0])
+    def test_reused_cache_is_still_hash_verified(self):
+        first = self.prepare(self.one)
+        base = next((self.cache / 'components-v2/kernel-base-apple').iterdir()) / 'kernel'
         (base / 'Image.gz').write_bytes(b'corrupted')
+        shutil.rmtree(first['kernel'].parent)
         with patch.object(kernel, 'build_base', side_effect=AssertionError('silently rebuilt')), \
                 self.assertRaisesRegex(ValueError, 'Cached component changed'):
-            build.prepare_kernel(self.two, self.cache)
+            build.prepare_kernel(self.two, self.cache, device='j71b')
 
     def test_missing_recipe_fails_before_any_checkout_or_producer(self):
         with patch.object(sources, 'checkout', side_effect=AssertionError('checked out source')), \
@@ -212,10 +179,10 @@ class SharedBuildCacheTests(unittest.TestCase):
 
     def test_config_and_local_in_tree_edits_rebuild_the_base_without_reset(self):
         self.prepare(self.one)
-        (self.two / 'kernel/configs/j71b/config').write_text('changed config')
+        (self.two / 'kernel/configs/apple/config').write_text('changed config')
         self.prepare(self.two)
         self.assertEqual(self.calls.count('kernel-base'), 2)
-        source = self.one / 'kernel/.work/j71b/source'
+        source = self.one / 'kernel/.work/apple/source'
         (source / 'driver.c').write_text('local experimental kernel driver\n')
         self.prepare(self.one)
         self.assertEqual(self.calls.count('kernel-base'), 3)
@@ -231,10 +198,11 @@ class SharedBuildCacheTests(unittest.TestCase):
         self.assertFalse((self.cache / 'race/before').exists())
         self.assertFalse((self.cache / 'race/after').exists())
 
-    def test_dtb_edit_only_rebuilds_device_layer(self):
+    def test_dtb_selection_only_rebuilds_device_layer(self):
         self.prepare(self.one)
-        (self.two / 'kernel/devicetree/j71b/overlay').write_text('changed overlay')
-        self.prepare(self.two)
+        hardware_layout.write(self.two, dtb='t8010-j72b')
+        second = self.prepare(self.two)
+        self.assertEqual((second['kernel'] / 'j71b.dtb').read_text(), 't8010-j72b')
         self.assertEqual(self.calls.count('kernel-base'), 1)
         self.assertEqual(self.calls.count('external-modules-and-dtb'), 2)
 

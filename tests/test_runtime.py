@@ -35,14 +35,16 @@ class Runtime(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_adapter_boot_sequence_timeouts_and_no_retry_are_preserved(self):
-        from orchard_cli.j71b import adapter
+        from orchard_cli import devices
+        from orchard_cli.apple import device as adapter_module
+        adapter = devices.load('j71b')
         from orchard_cli.apple import boot
         device = {'mode': 'dfu', 'location': 'selected-port', 'ecid': 123}
         assets = {'pongo': self.root / 'pongo', 'recovery': self.root / 'boot'}
         record = {'assets': {'recovery': {'sha256': 'expected-digest'}}}
         with patch('orchard_cli.state.cache_root', return_value=self.root), \
              patch.object(boot.shutil, 'which', return_value='/tools/palera1n'), \
-             patch.object(adapter.usb, 'selected') as selected, \
+             patch.object(adapter_module.usb, 'selected') as selected, \
              patch.object(boot, 'wait_mode') as wait, \
              patch.object(boot.subprocess, 'run') as bootstrap, \
              patch.object(boot.pongo, 'upload') as upload:

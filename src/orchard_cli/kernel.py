@@ -2,6 +2,8 @@
 
 Hardware is an unchanged input: use its existing full kernel, module, DTB and
 staging recipes. Cache policy and module-SDK handling do not live in hardware.
+Hardware builds one kernel per platform (kernel/series/<platform>); a device
+names its platform and DTB in devices/<device>/device.toml.
 """
 import json
 from pathlib import Path
@@ -19,16 +21,34 @@ def pin(hardware):
                 if '=' in line)
 
 
+def _series(hardware, *args):
+    return subprocess.check_output([sys.executable, str(Path(hardware) / 'kernel/series.py'), *args],
+                                   text=True)
+
+
+def layout(hardware, device):
+    """(platform, dtb) for a device, from hardware's kernel series."""
+    descriptor = Path(hardware) / 'devices' / device / 'device.toml'
+    if not descriptor.is_file():
+        raise ValueError(f'Missing hardware recipe input: {descriptor}')
+    platform, dtb = _series(hardware, '--resolve', device).split()
+    if dtb == '-':
+        raise ValueError(f'{device} is a kernel platform, not a device')
+    return platform, dtb
+
+
 def work_directory(hardware, device):
     # Preserve existing editable source and compiler output; never move/reset it.
     # These are ignored scratch files, not changes to the hardware repository.
-    return Path(hardware) / 'kernel/.work' / device
+    return Path(hardware) / 'kernel/.work' / layout(hardware, device)[0]
 
 
 def patch_identity(hardware, device):
-    patches = sorted((Path(hardware) / 'kernel/patches' / device).glob('*.patch'))
+    """Ordered series patches and the marker kernel/build writes for them."""
+    kernel = Path(hardware).resolve() / 'kernel'
+    patches = [Path(line) for line in _series(hardware, device).splitlines() if line]
     marker = b''.join(subprocess.check_output(['git', 'hash-object', str(p)]).strip() +
-                      b' ' + p.name.encode() + b'\n' for p in patches)
+                      b' ' + str(p.resolve().relative_to(kernel)).encode() + b'\n' for p in patches)
     return patches, marker
 
 
@@ -136,6 +156,7 @@ def build_base(hardware, cache, device, output):
         output.mkdir(parents=True)
         for name in ('Image.gz', 'kernel.release'):
             shutil.copy2(work / 'full' / name, output / name)
+        shutil.copytree(work / 'full/dtbs', output / 'dtbs')
         shutil.copytree(work / 'in-tree/lib', output / 'lib')
         export_sdk(compiler_output, output / 'sdk')
         (output / 'inputs.json').write_text(json.dumps({'source_tree': tree}) + '\n')
@@ -144,14 +165,15 @@ def build_base(hardware, cache, device, output):
 
 
 def build_device(hardware, cache, device, base, output):
-    """Build external modules and final DTB with a PRIVATE cached-SDK copy."""
+    """Select the device DTB; build any external modules with a PRIVATE cached-SDK copy."""
     from .build import command
     hardware, base, output = map(Path, (hardware, base, output))
+    platform, dtb = layout(hardware, device)
     source, _ = prepare_source(hardware, cache, device)
     tree = sources.working_tree(source)
     if json.loads((base / 'inputs.json').read_text())['source_tree'] != tree:
         raise ValueError('Cached kernel source identity differs; rebuild the base')
-    if (base / 'sdk/.config').read_bytes() != (hardware / 'kernel/configs' / device / 'config').read_bytes():
+    if (base / 'sdk/.config').read_bytes() != (hardware / 'kernel/configs' / platform / 'config').read_bytes():
         raise ValueError('Cached kernel configuration differs; rebuild the base')
     release = (base / 'kernel.release').read_text().strip()
     if not release or '/' in release or len(release.split()) != 1:
@@ -178,16 +200,14 @@ def build_device(hardware, cache, device, base, output):
         if (hardware / 'kernel/modules' / device).is_dir():
             command(hardware / 'kernel/build-modules', '--source', source, '--build', sdk,
                     '--modules', hardware / 'kernel/modules' / device,
-                    '--localversion', '-orchard-' + device, '--output', work / 'external')
+                    '--localversion', '-orchard-' + platform, '--output', work / 'external')
             external = ['--external', work / 'external']
         command(sys.executable, hardware / 'kernel/stage-modules.py', '--build', sdk,
                 *external, '--output', work / 'staged')
-        command(hardware / 'kernel/devicetree' / device / 'build', '--kernel-build', sdk,
-                '--headers', source / 'include', '--output', work / (device + '.dtb'))
         output.mkdir(parents=True)
         for name in ('Image.gz', 'kernel.release'):
             shutil.copy2(base / name, output / name)
-        shutil.copy2(work / (device + '.dtb'), output / (device + '.dtb'))
+        shutil.copy2(base / 'dtbs' / (dtb + '.dtb'), output / (device + '.dtb'))
         shutil.copytree(work / 'staged/lib', output / 'lib')
     if sources.working_tree(source) != tree:
         raise ValueError('Kernel source changed during module build; refusing result')

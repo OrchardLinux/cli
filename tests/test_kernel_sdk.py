@@ -11,6 +11,8 @@ from unittest.mock import patch
 import orchard_hardware
 from orchard_cli import build, kernel, kernel_sdk
 
+import hardware_layout
+
 
 class KernelSDKTests(unittest.TestCase):
     def setUp(self):
@@ -18,9 +20,8 @@ class KernelSDKTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.hardware = self.root / 'hardware'
-        config = self.hardware / 'kernel/configs/j71b/config'
-        config.parent.mkdir(parents=True)
-        config.write_text('config\n')
+        hardware_layout.write(self.hardware)
+        (self.hardware / 'kernel/configs/apple/config').write_text('config\n')
         self.original_hardware = Path(orchard_hardware.__file__).resolve().parent
 
     def compiler_output(self):
@@ -56,6 +57,8 @@ class KernelSDKTests(unittest.TestCase):
         (base / 'kernel.release').write_text('test-release\n')
         (base / 'Image.gz').write_text('cached kernel')
         (base / 'inputs.json').write_text(json.dumps({'source_tree': 'tree'}))
+        (base / 'dtbs').mkdir()
+        (base / 'dtbs/t8010-j71b.dtb').write_text('device dtb')
         modules = base / 'lib/modules/test-release/kernel/drivers'
         modules.mkdir(parents=True)
         (modules / 'keep.ko').write_text('cached upstream module')
@@ -88,8 +91,6 @@ class KernelSDKTests(unittest.TestCase):
                         patch.object(stage.buildenv, 'native', return_value=True), \
                         patch.object(stage.subprocess, 'run'):
                     stage.main()
-            elif Path(argv[0]) == self.hardware / 'kernel/devicetree/j71b/build':
-                Path(argv[argv.index('--output') + 1]).write_text('device dtb')
         output = self.root / 'result'
         with patch.object(kernel, 'prepare_source', return_value=(source, compiler)), \
                 patch.object(kernel.sources, 'working_tree', return_value='tree'), \
@@ -100,6 +101,7 @@ class KernelSDKTests(unittest.TestCase):
         self.assertEqual((result / 'extra/replace.ko').read_text(), 'new external module')
         self.assertFalse((result / 'kernel/drivers/replace.ko').exists())
         self.assertEqual((output / 'Image.gz').read_text(), 'cached kernel')
+        self.assertEqual((output / 'j71b.dtb').read_text(), 'device dtb')
         self.assertEqual(snapshot, {str(p.relative_to(base)): build.digest(p)
                                     for p in base.rglob('*') if p.is_file()})
         self.assertFalse(any(Path(args[0]) == self.hardware / 'kernel/build' for args in calls))
