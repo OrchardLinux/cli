@@ -27,7 +27,10 @@ class Device:
         self.PRODUCT = descriptor['match'].get('linux', {}).get('product')
         self.CHIP = descriptor['match']['dfu']['chip']
         self.BOARD = descriptor['match']['dfu']['board']
-        self.INSTALL = bool(descriptor.get('support', {}).get('install', False))
+        support = descriptor.get('support', {})
+        self.INSTALL = bool(support.get('install', False))
+        self.STATUS = support.get('status', 'experimental')
+        self.LIMITATIONS = list(support.get('limitations', []))
         self.REBOOT_MESSAGE = ('A fresh recovery boot is required.\n'
                                f'Put the {self.NAME} in DFU mode, then run: orchard install')
         self.firmware_inputs = partial(firmware.ensure, self.PROFILE)

@@ -31,7 +31,7 @@ class HostWorkflow(unittest.TestCase):
         self.addCleanup(self.state_patch.stop)
     def test_cancel_before_asset_access_download_or_mutation(self):
         from unittest.mock import Mock
-        adapter = Mock(NAME='Supported tablet', PROFILE='device')
+        adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', LIMITATIONS=[])
         with patch('orchard_cli.service.choose', return_value=(adapter, {'mode': 'dfu'})), \
              patch('orchard_cli.service.resolve') as assets:
             result = install(input_fn=lambda _: 'n', progress=Progress(io.StringIO()))
@@ -39,6 +39,24 @@ class HostWorkflow(unittest.TestCase):
             assets.assert_not_called()
             adapter.firmware_inputs.assert_not_called()
             adapter.boot.assert_not_called()
+
+    def test_experimental_device_shows_limitations_and_defaults_to_no(self):
+        from unittest.mock import Mock
+        adapter = Mock(NAME='Untested tablet', PROFILE='device', INSTALL=True, STATUS='experimental',
+                       LIMITATIONS=['No touchscreen yet', 'No Wi-Fi yet'])
+        prompts = []
+        with patch('orchard_cli.service.choose', return_value=(adapter, {'mode': 'dfu'})), \
+             patch('orchard_cli.service.resolve') as assets:
+            output = io.StringIO()
+            result = install(input_fn=lambda text: prompts.append(text) or '', progress=Progress(output))
+        self.assertTrue(result['cancelled'])
+        self.assertEqual(prompts, ['Install Linux on Untested tablet? [y/N] '])
+        text = output.getvalue()
+        self.assertIn('- No touchscreen yet', text)
+        self.assertIn('- No Wi-Fi yet', text)
+        self.assertIn('not been tested yet, proceed at your own risk', text)
+        assets.assert_not_called()
+        adapter.boot.assert_not_called()
 
     def test_guided_run_reaches_desktop_with_one_mixin_and_one_root_stream(self):
         for filesystem in ('ext4', 'unformatted'):
@@ -54,7 +72,7 @@ class HostWorkflow(unittest.TestCase):
             image, mixin = root / 'root', root / 'mixin'
             image.write_bytes(b'root-stream')
             mixin.write_bytes(b'private-data')
-            adapter = Mock(NAME='Supported tablet', PROFILE='device')
+            adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', LIMITATIONS=[])
             adapter.capture_adt.return_value = b'fresh-adt'
             adapter.prepare_mixin.return_value = (mixin, {'bytes': 12, 'sha256': 'mixin-digest'})
             import threading
@@ -233,7 +251,7 @@ class HostWorkflow(unittest.TestCase):
         from contextlib import contextmanager
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as directory:
-            adapter = Mock(NAME='Supported tablet', PROFILE='device')
+            adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', LIMITATIONS=[])
             adapter.REBOOT_MESSAGE = 'A fresh recovery boot is required. Run: orchard install'
             @contextmanager
             def connection(device):
