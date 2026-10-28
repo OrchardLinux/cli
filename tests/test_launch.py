@@ -25,7 +25,7 @@ class LaunchFlow(unittest.TestCase):
             receipt={'release':'alpine','root_sha256':'a'*64,'directory':'minimal'}
             adapter=Mock(PROFILE='j71b',NAME='iPad')
             adapter.connect.return_value=nullcontext(connection)
-            adapter.capture_adt.return_value=b'fresh ADT'
+            adapter.capture_inputs.return_value={'kind':'apple-adt','profile':'j71b','ecid':1,'data':b'fresh ADT'}
             def mixin(adt,firmware,dest):
                 dest.mkdir();path=dest/'mixin.tar.gz';path.write_bytes(b'x')
                 return path,{'bytes':1,'sha256':'a'*64}
@@ -43,7 +43,7 @@ class LaunchFlow(unittest.TestCase):
                 raise AssertionError('Launch must not use an installation/storage mutation RPC: '+operation)
             client.call.side_effect=call
             ready={'ready':True,'release':'alpine','ecid':1,'boot_id':BOOT,'profile':'j71b'}
-            with patch.object(launch,'choose',return_value=(adapter,{'resumed':False})), \
+            with patch.object(launch,'choose',return_value=(adapter,{'resumed':False,'ecid':1})), \
                  patch.object(launch,'resolve',return_value=({'release':'launcher'}, {'recovery':Path('boot')})) as resolve, \
                  patch.object(launch,'launch_manifest',return_value='https://example.invalid/j71b.boot.toml') as selected_manifest, \
                  patch.object(launch,'Client',return_value=client), \

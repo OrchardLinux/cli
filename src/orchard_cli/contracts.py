@@ -1,7 +1,7 @@
 """Typed host adapter boundary, not a device/plugin or boot-method framework.
 
 Adapters remain ordinary modules. These records describe the current supported
-USB/checkm8 workflow; common orchestration does not interpret chip/board values.
+USB boot workflows; common orchestration does not interpret chip/board values.
 Runtime artifact/identity verification remains in the existing implementations.
 """
 from contextlib import AbstractContextManager
@@ -22,12 +22,15 @@ class _SelectionDetails(TypedDict, total=False):
     serial_port: Optional[str]
     pwned: bool
     boot_id: Optional[str]
+    udid: str
+    network_interface: str
+    network_mac: str
 
 
 class SelectedDevice(_SelectionDetails):
     """Validated discovery result; resumed is explicit, never inferred by the host."""
     location: USBLocation
-    mode: Literal['dfu', 'pongo', 'linux']
+    mode: Literal['dfu', 'pongo', 'linux', 'ios', 'ibec']
     ecid: int
     resumed: bool
 
@@ -41,13 +44,21 @@ class BootAssets(TypedDict, total=False):
     pongo: Path
     recovery: Path
     root: Path
+    loader: Path
+    ibec: Path
+    kloader: Path
 
 
 class BootReceipt(TypedDict):
     sha256: str
 
 
-class BootRequest(TypedDict):
+class _BootDetails(TypedDict, total=False):
+    target_ecid: int
+    boot_method: str
+
+
+class BootRequest(_BootDetails):
     """Minimum adapter boot input, shared by resolved and explicit-file requests."""
     assets: Mapping[str, BootReceipt]
 
@@ -57,6 +68,13 @@ class MixinReceipt(TypedDict):
     kind: Literal['private-mixin']
     bytes: int
     sha256: str
+
+
+class PrivateCapture(TypedDict):
+    kind: Literal['apple-adt', 'p105-mtcl']
+    profile: str
+    ecid: int
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -93,7 +111,7 @@ class Adapter(Protocol):
 
     def forget_access(self, scope: BootState) -> None: ...
 
-    def capture_adt(self, device: Optional[SelectedDevice] = None) -> bytes: ...
+    def capture_inputs(self, device: Optional[SelectedDevice] = None) -> PrivateCapture: ...
 
     def firmware_inputs(self, clock: Clock, progress: Progress, *, allow_download: bool = True) -> Path: ...
 

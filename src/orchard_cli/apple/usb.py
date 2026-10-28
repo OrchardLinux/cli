@@ -6,7 +6,7 @@ import sys
 import uuid
 
 from .linux_usb import devices as linux_devices
-from orchard_cli.state import EndpointUnavailable
+from orchard_cli.state import EndpointUnavailable, AmbiguousDevices
 
 MODES = {0x1227: 'dfu', 0x4141: 'pongo', 0x4142: 'linux'}
 
@@ -38,22 +38,40 @@ def devices():
                   for label in ('ECID', 'CPID', 'BDID')]
         descendants = list(node.get('IORegistryEntryChildren', []))
         ports = []
+        network_names, network_macs = set(), set()
         while descendants:
             child = descendants.pop()
+            if child.get('IOObjectClass') == 'IOUSBHostDevice':
+                continue
             descendants.extend(child.get('IORegistryEntryChildren', []))
+            if child.get('IOObjectClass') in ('IOEthernetInterface', 'IOSkywalkLegacyEthernetInterface'):
+                name = child.get('BSD Name')
+                if isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,31}', name):
+                    network_names.add(name)
+            mac = child.get('IOMACAddress')
+            if isinstance(mac, bytes) and len(mac) == 6:
+                network_macs.add(':'.join(f'{value:02x}' for value in mac))
             if child.get('IOObjectClass') == 'IOSerialBSDClient':
                 port = child.get('IOCalloutDevice')
                 if isinstance(port, str) and port.startswith('/dev/cu.'):
                     ports.append(port)
         if len(ports) > 1:
             raise DeviceError('Ambiguous USB serial ports on the selected device')
-        found.append({'location': location, 'mode': MODES.get(node.get('idProduct'), 'other'),
+        if len(network_names) > 1 or len(network_macs) > 1:
+            raise DeviceError('Ambiguous USB network interfaces on a device')
+        observation = {'location': location, 'mode': MODES.get(node.get('idProduct'), 'other'),
                       'ecid': int(fields[0].group(1), 16) if fields[0] else None,
                       'boot_id': str(uuid.UUID(boot.group(1))) if boot else None,
                       'chip': int(fields[1].group(1), 16) if fields[1] else None,
                       'board': int(fields[2].group(1), 16) if fields[2] else None,
                       'product': node.get('USB Product Name'),
-                      'serial_port': ports[0] if ports else None})
+                      'serial_port': ports[0] if ports else None}
+        if re.fullmatch(r'[0-9a-fA-F]{40}', serial):
+            observation['udid'] = serial.lower()
+        if network_names and network_macs:
+            observation['network_interface'] = next(iter(network_names))
+            observation['network_mac'] = next(iter(network_macs))
+        found.append(observation)
     return found
 
 
@@ -62,7 +80,7 @@ def sole_target():
     if not targets:
         raise EndpointUnavailable('Selected USB target is not connected')
     if len(targets) != 1:
-        raise ValueError('Connect exactly one target in DFU, Pongo or Linux; device selection is not supported')
+        raise AmbiguousDevices('Connect exactly one target in DFU, Pongo or Linux; device selection is not supported')
     return targets[0]
 
 

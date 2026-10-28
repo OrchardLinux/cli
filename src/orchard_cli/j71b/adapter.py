@@ -2,7 +2,7 @@
 from contextlib import AbstractContextManager
 from typing import Any, Dict, List, Optional, cast
 
-from orchard_cli.contracts import BootAssets, BootRequest, Connection, SelectedDevice
+from orchard_cli.contracts import BootAssets, BootRequest, Connection, SelectedDevice, PrivateCapture
 from orchard_cli.state import BootState, DeviceState, EndpointUnavailable
 from orchard_cli.progress import Progress
 from orchard_cli.apple import usb, boot as apple_boot, adt_capture
@@ -51,6 +51,11 @@ def capture_adt(device: Optional[SelectedDevice] = None) -> bytes:
     if device is not None and validate_adt(data) != device['ecid']:
         raise ValueError('Fresh ADT identity differs from the confirmed device')
     return data
+
+
+def capture_inputs(device: Optional[SelectedDevice] = None) -> PrivateCapture:
+    data = capture_adt(device)
+    return {'kind': 'apple-adt', 'profile': PROFILE, 'ecid': validate_adt(data), 'data': data}
 
 
 def list_devices() -> List[Dict[str, Any]]:

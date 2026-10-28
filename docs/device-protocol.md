@@ -62,3 +62,32 @@ Host code must not infer device paths or encode module loads, filesystem offsets
 - Pre-exec PID 1 failures attempt to restore moved pseudo-filesystem aliases and restart key-only recovery diagnostics, never retrying handoff/storage. Reported failures stop host readiness polling immediately. Kernel failure or failure inside the final root-switch executable can still require DFU recovery.
 - The desktop shell reports readiness only after constructing its root and successfully capturing a compositor frame to `/dev/null`. The device checks the boot ID, live shell process and owned Wayland socket.
 - No screenshot is retained. Readiness does not attest touch gestures, brightness interaction or Wi-Fi association.
+## P105 tethered recovery
+
+P105 uses protocol 1 with a limited operation set:
+
+| Operation | Behavior |
+| --- | --- |
+| `status` | Report profile, provisioned ECID, live kernel boot ID, root mode, readiness and the flash fence |
+| `diagnostics` | Add the kernel version, MTD inventory and a bounded kernel log |
+| `bootstrap` | Provision one diagnostic key through the physical RAM serial console; return the pinned host key and USB SSH endpoint |
+| `handoff` | Queue one NFS pivot bound to profile, ECID, boot ID and operation UUID |
+
+`handoff` takes `nfs_root` in the form `10.55.0.1:/absolute/export/path`.
+Recovery accepts an authenticated request before PID 1 mounts the export. It
+checks the P105 systemd marker and ARM executable, then prepares hardware and
+RAM diagnostics before moving mounts. A rejected mount or root validation leaves the RAM console and
+its diagnostic state available. Requests receive one dispatch per attempt.
+
+The USB serial number carries the owner's ECID and the current kernel boot
+ID. The ECID is provisioned from the verified iOS selection; P105's static
+device tree supplies its board identity. The ordinary kernel disables its
+NAND controller. Each ready status checks the live board and controller fence.
+
+During a mount move, an in-flight status can report `mode=handoff` from the
+protected queued identity. It stays unready until the live checks succeed in
+the NFS root. The serial-pinned SSH key travels in RAM across this transition.
+The host stores access by profile, ECID and boot ID.
+
+The internal storage operations described for J71b below remain outside the
+P105 operation set. The host checks the reported operations before dispatch.

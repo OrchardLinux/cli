@@ -3,8 +3,9 @@ import importlib
 from typing import List, Optional, Tuple
 
 from .contracts import Adapter, SelectedDevice
+from .state import AmbiguousDevices
 
-SUPPORTED = ('j71b',)
+SUPPORTED = ('j71b', 'p105')
 
 
 def load(profile: Optional[str] = None) -> Adapter:
@@ -21,13 +22,15 @@ def load(profile: Optional[str] = None) -> Adapter:
     return adapter
 
 
-def choose() -> Tuple[Adapter, SelectedDevice]:
+def choose(profile: Optional[str] = None) -> Tuple[Adapter, SelectedDevice]:
     matches: List[Tuple[Adapter, SelectedDevice]] = []
     errors: List[str] = []
-    for profile in SUPPORTED:
+    for profile in ((profile,) if profile else SUPPORTED):
         adapter = load(profile)
         try:
             matches.append((adapter, adapter.discover()))
+        except AmbiguousDevices:
+            raise
         except ValueError as error:
             errors.append(str(error))
     if len(matches) != 1:

@@ -12,9 +12,9 @@ from .state import exclusive_operation, private_directory
 
 @exclusive_operation
 def launch(manifest=None, *, directory=None, target=None, allow_firmware_download=False,
-           input_fn=input, progress=None):
+           input_fn=input, progress=None, profile=None):
     clock, progress = Clock(), progress or Progress()
-    adapter, device = choose()
+    adapter, device = choose(profile) if profile else choose()
     if ask(clock, f'Launch an installed system on {adapter.NAME}? [y/N] ', input_fn).lower() not in ('y','yes'):
         return {'cancelled':True}
     manifest = manifest if manifest is not None else launch_manifest(adapter.PROFILE)
@@ -33,7 +33,10 @@ def launch(manifest=None, *, directory=None, target=None, allow_firmware_downloa
         with tempfile.TemporaryDirectory(prefix='launch-',dir=private) as temporary:
             work = Path(temporary)
             adt = work / 'device.adt'
-            adt.write_bytes(adapter.capture_adt(device))
+            capture = adapter.capture_inputs(device)
+            if capture['profile'] != adapter.PROFILE or capture['ecid'] != device['ecid']:
+                raise ValueError('Private input capture differs from the selected device')
+            adt.write_bytes(capture['data'])
             adt.chmod(0o600)
             mixin, receipt = adapter.prepare_mixin(adt,firmware,work/'mixin')
             with mixin.open('rb') as source:

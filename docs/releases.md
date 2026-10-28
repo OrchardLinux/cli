@@ -21,7 +21,7 @@ python -m pip install --upgrade pip build
 python -m build --wheel
 ```
 
-Build hardware first, then CLI. Wheel versions come from each repository's `pyproject.toml`. The release pair prepared here is CLI `0.1.10` and hardware `0.1.10`. It includes the expanded J71b Wi-Fi firmware recipe; consuming images must require Orchard `0.1.10` or newer.
+Build hardware first, then CLI. Wheel versions come from each repository's `pyproject.toml`. The release pair prepared here is CLI `0.1.11` and hardware `0.1.11`. This pair adds private P105 tethered recovery and NFS handoff. P105 requires the companion hardware resources; public image assembly remains a separate release step.
 
 ## Prepare assets locally
 
@@ -29,9 +29,9 @@ From the CLI repository, pass explicit paths to both wheels:
 
 ```sh
 python tools/prepare_release.py \
-  --cli-wheel dist/orchard_cli-0.1.10-py3-none-any.whl \
-  --hardware-wheel /path/to/orchard_hardware-0.1.10-py3-none-any.whl \
-  --output out/publication/host-0.1.10
+  --cli-wheel dist/orchard_cli-0.1.11-py3-none-any.whl \
+  --hardware-wheel /path/to/orchard_hardware-0.1.11-py3-none-any.whl \
+  --output out/publication/host-0.1.11
 ```
 
 Use the actual wheel filenames for later versions. The tool reads their metadata and computes hashes. Output must be a new directory:
@@ -44,8 +44,8 @@ Before publishing, install the pair into a fresh virtual environment, run `pytho
 ```sh
 python3 -m venv out/release-test
 out/release-test/bin/python -m pip install --only-binary=:all: \
-  dist/orchard_cli-0.1.10-py3-none-any.whl \
-  /path/to/orchard_hardware-0.1.10-py3-none-any.whl
+  dist/orchard_cli-0.1.11-py3-none-any.whl \
+  /path/to/orchard_hardware-0.1.11-py3-none-any.whl
 out/release-test/bin/python -m pip check
 PYTHONDONTWRITEBYTECODE=1 out/release-test/bin/python -m unittest discover -s tests -v
 out/release-test/bin/orchard resolve tests/fixtures/first/index.toml

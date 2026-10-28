@@ -15,6 +15,10 @@ class EndpointUnavailable(RuntimeError):
     """The selected USB endpoint is temporarily absent, not a different identity."""
 
 
+class AmbiguousDevices(ValueError):
+    """Discovery found multiple candidates and cannot select a device."""
+
+
 def private_directory(path: Path) -> Path:
     """No linked private-state components; credentials never inherit public modes."""
     root = cache_root() / 'private'

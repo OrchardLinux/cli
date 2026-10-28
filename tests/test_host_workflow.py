@@ -55,7 +55,7 @@ class HostWorkflow(unittest.TestCase):
             image.write_bytes(b'root-stream')
             mixin.write_bytes(b'private-data')
             adapter = Mock(NAME='Supported tablet', PROFILE='device')
-            adapter.capture_adt.return_value = b'fresh-adt'
+            adapter.capture_inputs.return_value = {'kind':'apple-adt','profile':'device','ecid':1,'data':b'fresh-adt'}
             adapter.prepare_mixin.return_value = (mixin, {'bytes': 12, 'sha256': 'mixin-digest'})
             import threading
             downloads_started = threading.Barrier(2)

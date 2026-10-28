@@ -8,7 +8,7 @@ from orchard_cli import devices
 from orchard_cli.j71b import adapter
 
 MEMBERS = ('PROFILE', 'NAME', 'REBOOT_MESSAGE', 'list_devices', 'discover', 'boot',
-           'connect', 'connect_saved', 'forget_access', 'capture_adt', 'firmware_inputs', 'prepare_mixin')
+           'connect', 'connect_saved', 'forget_access', 'capture_inputs', 'firmware_inputs', 'prepare_mixin')
 
 
 def module(**changes):
@@ -53,7 +53,7 @@ class AdapterContract(unittest.TestCase):
     def test_choose_passes_the_validated_selection_through_unchanged(self):
         selection = {'mode':'dfu','location':'usb','ecid':1,'resumed':False}
         implementation = module(discover=Mock(return_value=selection))
-        with patch.object(devices, 'load', return_value=implementation):
+        with patch.object(devices, 'load', return_value=implementation), patch.object(devices, 'SUPPORTED', ('j71b',)):
             loaded, selected = devices.choose()
         self.assertIs(loaded, implementation)
         self.assertIs(selected, selection)

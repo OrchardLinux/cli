@@ -64,7 +64,7 @@ class DownloadUI(unittest.TestCase):
 
     def test_release_assets_start_concurrently(self):
         barrier = threading.Barrier(3)
-        document = {'protocol': 1, 'version': '1', 'name': 'Test Linux',
+        document = {'protocol': 1, 'version': '1', 'name': 'Test Linux', 'boot_method': 'checkm8-pongo',
                     'pongo': {}, 'boot': {}, 'root': {}}
         def materialize(*args, **kwargs):
             barrier.wait(timeout=2)

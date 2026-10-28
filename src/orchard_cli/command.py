@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version=version('orchard-cli'))
     parser.add_argument('--verbose', action='store_true', help='show internal device events')
+    parser.add_argument('--profile', choices=('j71b', 'p105'), help='select a device profile explicitly')
     commands = parser.add_subparsers(dest='action', required=True)
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
@@ -36,7 +37,7 @@ def main():
     distros.add_argument('source', nargs='?')
     check = commands.add_parser('resolve', help='verify inputs without accessing a device')
     check.add_argument('source')
-    check.add_argument('--profile', default='j71b')
+    check.add_argument('--profile', dest='resolve_profile')
     check.add_argument('--boot', action='store_true', help='resolve only boot assets')
     commands.add_parser('devices', help='list USB devices without modifying them')
     commands.add_parser('setup-host', help='install missing boot tools and Linux USB permissions; no device access')
@@ -46,14 +47,27 @@ def main():
     boot.add_argument('--image', type=Path)
     boot.add_argument('--receipt', type=Path)
     boot.add_argument('--pongo-image', type=Path)
+    boot.add_argument('--nfs-root', help='hand recovery off to an existing host USB NFS export')
     adt = commands.add_parser('capture-adt', help='save a fresh recovery ADT privately')
     adt.add_argument('--output', type=Path, required=True)
+    capture = commands.add_parser('capture-inputs', help='save private hardware inputs for the selected device')
+    capture.add_argument('--output', type=Path, required=True)
+    network_cleanup = commands.add_parser('p105-network-cleanup', help='remove an address added by an earlier P105 boot')
+    network_cleanup.add_argument('--record', type=Path, required=True)
+    private_boot = commands.add_parser('p105-manifest', help='compose a private P105 boot directory from verified components')
+    for name in ('components','ibec','kloader','output'):
+        private_boot.add_argument('--'+name, type=Path, required=True)
     mixin = commands.add_parser('mixin', help='prepare a data-only private mixin')
-    for name in ('adt', 'firmware-dir', 'output'):
+    mixin_inputs = mixin.add_mutually_exclusive_group(required=True)
+    mixin_inputs.add_argument('--adt', type=Path, help='J71b ADT capture')
+    mixin_inputs.add_argument('--inputs', type=Path, help='device-specific private input capture')
+    for name in ('firmware-dir', 'output'):
         mixin.add_argument('--' + name, type=Path, required=True)
     for action in ('status', 'diagnostics', 'targets', 'destination', 'prepare', 'install-root', 'handoff', 'abort'):
         command = commands.add_parser(action, help='invoke the device-owned ' + action + ' operation')
         command.add_argument('--recovery', action='store_true', help='provision access through the recovery serial shell')
+        if action == 'handoff':
+            command.add_argument('--nfs-root', help='existing host USB NFS export')
         if action in ('destination', 'install-root'):
             command.add_argument('--target', required=True, help='observed partition identifier')
             command.add_argument('--token', required=True, help='device-issued selection token')
@@ -71,31 +85,52 @@ def main():
     progress = Progress(verbose=args.verbose)
     try:
         with ExitStack() as stack:
-            if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host'):
+            if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host', 'p105-manifest'):
                 stack.enter_context(operation_lock())
             if args.action == 'install':
                 source = args.manifest or args.source
                 if not source:
                     raise ValueError('Specify a distro, index or manifest: orchard install SOURCE')
-                result = install(source, progress=progress)
+                result = install(source, progress=progress, **({'profile':args.profile} if args.profile else {}))
             elif args.action == 'launch':
                 from orchard_cli.launch import launch
                 result = launch(args.manifest, directory=args.directory, target=args.target,
-                                allow_firmware_download=args.allow_firmware_download, progress=progress)
+                                allow_firmware_download=args.allow_firmware_download, progress=progress,
+                                **({'profile':args.profile} if args.profile else {}))
             elif args.action == 'distros':
                 if bool(args.name) != bool(args.source):
                     raise ValueError('Use orchard distros NAME INDEX_URL_OR_FILE, or orchard distros to list')
                 result = register(args.name, args.source) if args.name else catalogue()
             elif args.action == 'resolve':
-                record, assets = resolve(args.source, args.profile, progress, purpose='boot' if args.boot else 'install')
+                record, assets = resolve(args.source, args.resolve_profile or args.profile or 'j71b', progress,
+                                         purpose='boot' if args.boot else 'install')
                 result = {'manifest': record, 'files': {key: str(path) for key, path in assets.items()}}
             elif args.action == 'devices':
-                result = load().list_devices()
+                if args.profile:
+                    result = load(args.profile).list_devices()
+                else:
+                    from orchard_cli.devices import SUPPORTED
+                    rows = [row for profile in SUPPORTED for row in load(profile).list_devices()]
+                    result = list({json.dumps(row, sort_keys=True): row for row in rows}.values())
+            elif args.action == 'p105-network-cleanup':
+                from orchard_cli.p105.network import cleanup
+                result = cleanup(args.record)
+            elif args.action == 'p105-manifest':
+                from orchard_cli.p105.prepare import manifest
+                result = manifest(args.components,args.ibec,args.kloader,args.output)
             elif args.action == 'setup-host':
-                from orchard_cli.host_setup import setup
-                result = setup(progress)
+                if args.profile == 'p105':
+                    from orchard_cli.p105.config import tool
+                    result = {'profile':'p105','tools':{name:tool(name) for name in
+                              ('ideviceinfo','iproxy','irecovery')}}
+                else:
+                    from orchard_cli.host_setup import setup
+                    result = setup(progress)
             elif args.action == 'boot':
-                adapter, device = choose()
+                adapter, device = choose(args.profile) if args.profile else choose()
+                if args.nfs_root:
+                    from orchard_cli.p105.network import nfs_root
+                    nfs_root(args.nfs_root)
                 if args.image:
                     if not args.receipt:
                         raise ValueError('--image requires --receipt')
@@ -114,24 +149,42 @@ def main():
                     record, assets = resolve(source, adapter.PROFILE, progress, purpose='boot')
                 adapter.boot(device, assets, record, progress)
                 result = {'recovery_observed': True}
-            elif args.action == 'capture-adt':
-                adapter, device = choose()
+                if args.nfs_root:
+                    from orchard_cli.service import handoff_nfs
+                    with adapter.connect(device) as nfs_connection:
+                        result = handoff_nfs(nfs_connection, args.nfs_root, progress)
+            elif args.action in ('capture-adt', 'capture-inputs'):
+                adapter, device = choose(args.profile) if args.profile else choose()
                 if args.output.exists() or args.output.is_symlink():
                     raise ValueError('ADT destination already exists')
-                data = adapter.capture_adt(device)
+                captured = adapter.capture_inputs(device)
+                if args.action == 'capture-adt' and captured['kind'] != 'apple-adt':
+                    raise ValueError('This device uses panel calibration; use orchard capture-inputs')
+                if captured['ecid'] != device['ecid'] or captured['profile'] != adapter.PROFILE:
+                    raise ValueError('Private capture belongs to another device')
+                data = captured['data']
                 args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 with os.fdopen(os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as stream:
                     stream.write(data)
                 result = {'saved': str(args.output), 'bytes': len(data)}
             elif args.action == 'mixin':
-                adapter = load()
-                archive, result = adapter.prepare_mixin(args.adt, args.firmware_dir, args.output)
+                adapter = load(args.profile)
+                archive, result = adapter.prepare_mixin(args.inputs or args.adt, args.firmware_dir, args.output)
                 result = {**result, 'path': str(archive)}
             else:
-                adapter, device = choose()
+                adapter, device = choose(args.profile) if args.profile else choose()
                 connection = adapter.connect if args.recovery else adapter.connect_saved
                 with connection(device) as ssh:
                     client = Client(ssh, progress)
+                    if args.action == 'handoff' and args.nfs_root:
+                        from orchard_cli.service import handoff_nfs
+                        result = handoff_nfs(ssh, args.nfs_root, progress)
+                        print(json.dumps(result, indent=2))
+                        return
+                    if args.action not in ('status', 'diagnostics'):
+                        available = client.call('status').get('operations')
+                        if available is not None and args.action not in available:
+                            raise ValueError('Operation unavailable in this recovery; use its reported operations')
                     request = {}
                     if args.action in ('destination', 'install-root'):
                         request = {'target': args.target, 'selection_token': args.token, 'directory': args.directory}

@@ -52,6 +52,7 @@ see the [launcher build and publication instructions](https://github.com/Orchard
 
 ## Documentation
 
+- [iPad mini 1 private tethered boot and NFS handoff](docs/p105.md)
 - [Release publishing and updates](docs/releases.md)
 - [Device operation protocol](docs/device-protocol.md)
 - [Host adapter contract](docs/adapter-contract.md)

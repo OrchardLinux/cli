@@ -21,15 +21,28 @@ def devices(root=Path('/sys/bus/usb/devices')):
         ecid = re.search(r'\bECID:([0-9a-fA-F]+)\b', serial)
         chip = re.search(r'\bCPID:([0-9a-fA-F]+)\b', serial)
         board = re.search(r'\bBDID:([0-9a-fA-F]+)\b', serial)
-        ports = {str(Path('/dev') / p.name) for p in node.glob('**/tty/ttyACM*')}
+        interfaces = [p for p in node.glob(node.name + ':*') if p.is_dir()]
+        ports = {str(Path('/dev') / p.name) for interface in interfaces for p in interface.glob('**/tty/ttyACM*')}
+        networks = [p for interface in interfaces for p in interface.glob('net/*') if p.is_dir()]
         if len(ports) > 1:
             raise ValueError('Ambiguous USB serial ports on a device')
+        if len(networks) > 1:
+            raise ValueError('Ambiguous USB network interfaces on a device')
         product = (node / 'product').read_text().strip() if (node / 'product').exists() else ''
-        found.append(dict(location=node.name, mode=MODES.get(pid, 'other'),
+        observation = dict(location=node.name, mode=MODES.get(pid, 'other'),
                           ecid=int(ecid.group(1), 16) if ecid else None,
                           boot_id=str(uuid.UUID(boot.group(1))) if boot else None,
                           chip=int(chip.group(1), 16) if chip else None,
                           board=int(board.group(1), 16) if board else None,
                           pwned='YOLO:checkra1n' in serial, product=product,
-                          serial_port=next(iter(ports), None)))
+                          serial_port=next(iter(ports), None))
+        if re.fullmatch(r'[0-9a-fA-F]{40}', serial):
+            observation['udid'] = serial.lower()
+        if networks:
+            mac = (networks[0] / 'address').read_text().strip().lower()
+            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
+                raise ValueError('Invalid USB network interface address')
+            observation['network_interface'] = networks[0].name
+            observation['network_mac'] = mac
+        found.append(observation)
     return found

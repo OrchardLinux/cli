@@ -163,6 +163,40 @@ def wait_ready(client, progress, timeout=90, *, context='Root installation compl
         time.sleep(0.5)
 
 
+def handoff_nfs(connection, source, progress):
+    from .p105.network import check_export
+    scope = connection.scope
+    client = Client(connection, progress)
+    status = client.call('status')
+    if not scope.matches(status) or status.get('profile') != scope.device.profile:
+        raise ValueError('NFS handoff identity differs from the selected boot')
+    if 'handoff-nfs' not in status.get('capabilities', []):
+        raise ValueError('Selected recovery does not offer an NFS handoff')
+    check_export(source)
+    path = private_directory(scope.root)/'last-nfs-handoff.json'
+    if path.exists():
+        raise ValueError('NFS handoff was already attempted in this boot; inspect its saved report')
+    request = {'profile': scope.device.profile, 'ecid': scope.device.ecid,
+               'boot_id': scope.boot_id, 'nfs_root': source, 'operation_id': str(uuid.uuid4())}
+    report = {**request, 'status': 'unknown', 'recovery_status': status}
+    save_report(path, report)
+    try:
+        result = client.call('handoff', request, timeout=20)
+        if (result.get('status') != 'accepted' or
+                any(result.get(key) != value for key, value in request.items())):
+            raise ValueError('NFS handoff receipt differs from this request')
+        progress.phase('NFS handoff accepted; waiting for the installed system')
+        ready = wait_ready(client, progress, timeout=120, context='NFS handoff was accepted')
+        if not scope.matches(ready) or ready.get('root_filesystem') not in ('nfs', 'nfs4'):
+            raise ValueError('Installed NFS system differs from this recovery boot')
+        report.update(status='complete', installed_status=ready)
+        save_report(path, report)
+        return ready
+    except BaseException as error:
+        save_report(path, {**report, 'error': str(error)})
+        raise
+
+
 def finish_ssh_access(client, adapter: Adapter, status, report, path, clock, input_fn, progress, *, scope):
     if not scope.matches(status) or status.get('profile') != scope.device.profile:
         raise ValueError('Readiness identity differs from the credential scope')
@@ -206,9 +240,9 @@ def finish_ssh_access(client, adapter: Adapter, status, report, path, clock, inp
 
 
 @exclusive_operation
-def install(manifest=None, *, input_fn=input, progress=None):
+def install(manifest=None, *, input_fn=input, progress=None, profile=None):
     clock, progress = Clock(), progress or Progress()
-    adapter, device = choose()  # Definition of installation timing begins here.
+    adapter, device = choose(profile) if profile else choose()
     answer = ask(clock, f'Install Linux on {adapter.NAME}? [Y/n] ', input_fn)
     if answer.lower() not in ('', 'y', 'yes'):
         progress.phase('Cancelled; no download or device mutation performed')
@@ -251,8 +285,11 @@ def install(manifest=None, *, input_fn=input, progress=None):
             if firmware is None:
                 firmware = adapter.firmware_inputs(clock, progress)
             progress.phase('Preparing device hardware…')
-            adt = work / 'device.adt'
-            adt.write_bytes(adapter.capture_adt(device))
+            capture = adapter.capture_inputs(device)
+            if capture['profile'] != adapter.PROFILE or capture['ecid'] != device['ecid']:
+                raise ValueError('Private input capture differs from the selected device')
+            adt = work / ('device.adt' if capture['kind'] == 'apple-adt' else 'device-inputs.json')
+            adt.write_bytes(capture['data'])
             adt.chmod(0o600)
             mixin, mixin_record = adapter.prepare_mixin(adt, firmware, work / 'mixin')
             with mixin.open('rb') as source:

@@ -38,6 +38,23 @@
     "version": {
       "type": "string",
       "minLength": 1
+    },
+    "loader": {
+      "$ref": "#/$defs/receipt"
+    },
+    "ibec": {
+      "$ref": "#/$defs/receipt"
+    },
+    "kloader": {
+      "$ref": "#/$defs/receipt"
+    },
+    "private": {
+      "type": "boolean"
+    },
+    "target_ecid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
     }
   },
   "required": [
@@ -66,6 +83,35 @@
         "required": [
           "pongo"
         ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "boot_method": {
+            "const": "jailbreak-kdfu"
+          }
+        },
+        "required": [
+          "boot_method"
+        ]
+      },
+      "then": {
+        "required": [
+          "loader",
+          "ibec",
+          "kloader",
+          "private",
+          "target_ecid"
+        ],
+        "properties": {
+          "device": {
+            "const": "p105"
+          },
+          "private": {
+            "const": true
+          }
+        }
       }
     }
   ],

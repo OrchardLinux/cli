@@ -137,7 +137,7 @@ class DeviceIsolation(unittest.TestCase):
         for name,value in {'idVendor':'05ac','idProduct':'4142','product':'J71b Recovery',
                            'serial':f'ECID:0000000000000002 BOOT:{BOOT_B}'}.items():
             (node/name).write_text(value)
-        (node/'iface/tty/ttyACM0').mkdir(parents=True)
+        (node/(node.name+':1.0')/'tty/ttyACM0').mkdir(parents=True)
         rows = linux_usb.devices(self.root)
         self.assertEqual(len(rows),1)
         self.assertEqual((rows[0]['ecid'],rows[0]['boot_id']),(2,BOOT_B))

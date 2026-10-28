@@ -172,8 +172,16 @@ def select_manifest(source, profile, progress=None, clock=None, purpose='install
     allowed = ('orchard.install',) if purpose == 'install' else ('orchard.install', 'orchard.boot')
     if document['kind'] not in allowed or document['device'] != profile:
         raise ValueError('Manifest is not compatible with this device/operation')
-    if document['boot_method'] != 'checkm8-pongo':
-        raise ValueError('This Orchard build implements only checkm8-pongo')
+    method = document['boot_method']
+    if method not in ('checkm8-pongo', 'jailbreak-kdfu') or method not in hardware_device(profile)['boot']['methods']:
+        raise ValueError('Unsupported boot method for this device')
+    if method == 'jailbreak-kdfu':
+        if purpose == 'install':
+            raise ValueError('P105 supports RAM recovery and NFS handoff; internal installation awaits storage support')
+        if bundle is None or not document.get('private'):
+            raise ValueError('P105 boot requires an owner-local private manifest')
+        if any('file' not in document[role] for role in ('boot', 'loader', 'ibec', 'kloader')):
+            raise ValueError('P105 private boot assets must be local files')
     if document['protocol'] != 1:
         raise ValueError('Unsupported device protocol')
     actual = tuple(int(part) for part in version('orchard-cli').split('.'))
@@ -187,17 +195,22 @@ def select_manifest(source, profile, progress=None, clock=None, purpose='install
 
 def resolve(manifest, profile, progress=None, clock=None, purpose='install'):
     document, bundle = select_manifest(manifest, profile, progress, clock, purpose)
-    roles = {'pongo': 'pongo', 'recovery': 'boot'}
+    roles = ({'pongo': 'pongo', 'recovery': 'boot'} if document['boot_method'] == 'checkm8-pongo' else
+             {'recovery': 'boot', 'loader': 'loader', 'ibec': 'ibec', 'kloader': 'kloader'})
     if purpose == 'install':
         roles['root'] = 'root'
     paths, receipts = {}, {role: document[field] for role, field in roles.items()}
-    labels = {'pongo': 'Pongo', 'recovery': 'Recovery', 'root': document.get('name', 'Linux')}
+    labels = {'pongo': 'Pongo', 'recovery': 'Recovery', 'root': document.get('name', 'Linux'),
+              'loader': 'Staging loader', 'ibec': 'Private iBEC', 'kloader': 'iOS loader'}
     with ThreadPoolExecutor(max_workers=len(roles)) as pool:
         futures = {role: pool.submit(materialize, receipt, bundle, progress, clock, label=labels[role])
                    for role, receipt in receipts.items()}
         for role, future in futures.items():
             paths[role] = future.result()
     record = {'protocol': document['protocol'], 'profile': profile, 'assets': receipts,
+              'boot_method': document['boot_method'],
               'release': document.get('version'), 'name': document.get('name', 'Linux'),
               'default_root': document.get('install', {}).get('default_root', '/linux')}
+    if 'target_ecid' in document:
+        record['target_ecid'] = document['target_ecid']
     return record, paths

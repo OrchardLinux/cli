@@ -10,7 +10,7 @@ on:
       hardware_tag:
         description: Hardware version to pair with this CLI
         required: true
-        default: v0.1.10
+        default: v0.1.11
       hardware_run_id:
         description: Optional hardware workflow run providing the tested wheel before its first release
         required: false
@@ -24,7 +24,7 @@ jobs:
   package:
     runs-on: ubuntu-24.04
     env:
-      HARDWARE_TAG: ${{ inputs.hardware_tag || 'v0.1.10' }}
+      HARDWARE_TAG: ${{ inputs.hardware_tag || 'v0.1.11' }}
     steps:
       - uses: actions/checkout@v4
         with:
