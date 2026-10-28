@@ -30,7 +30,8 @@ class Device:
         support = descriptor.get('support', {})
         self.INSTALL = bool(support.get('install', False))
         self.STATUS = support.get('status', 'experimental')
-        self.LIMITATIONS = list(support.get('limitations', []))
+        self.CAVEATS = list(support.get('caveats', []))
+        self.FEATURES = dict(descriptor.get('features', {}))
         self.REBOOT_MESSAGE = ('A fresh recovery boot is required.\n'
                                f'Put the {self.NAME} in DFU mode, then run: orchard install')
         self.firmware_inputs = partial(firmware.ensure, self.PROFILE)

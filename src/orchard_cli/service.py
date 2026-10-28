@@ -205,6 +205,19 @@ def finish_ssh_access(client, adapter: Adapter, status, report, path, clock, inp
     progress.phase('SSH access revoked for this boot; cached credentials removed')
 
 
+def caveats(adapter):
+    """What to know before installing: features that are not working, free-text caveats."""
+    import orchard_hardware
+    labels = orchard_hardware.features()
+    states = {'partial': 'partial', 'untested': 'untested', 'missing': 'not working yet'}
+    rows = [f'- {label}: {states[adapter.FEATURES[name]]}' for name, label in labels.items()
+            if adapter.FEATURES.get(name) in states]
+    lines = ['Caveats:', *rows, *(f'- {text}' for text in adapter.CAVEATS)] if rows or adapter.CAVEATS else []
+    if adapter.STATUS != 'supported':
+        lines.append('This device has not been tested yet, proceed at your own risk!')
+    return lines
+
+
 @exclusive_operation
 def install(manifest=None, *, input_fn=input, progress=None):
     clock, progress = Clock(), progress or Progress()
@@ -212,15 +225,11 @@ def install(manifest=None, *, input_fn=input, progress=None):
     if not adapter.INSTALL:
         raise ValueError(f'Installing on the {adapter.NAME} is not available yet; '
                          'RAM boot is available for testing')
-    experimental = adapter.STATUS != 'supported'
     progress.phase(f'{adapter.NAME} ({adapter.STATUS})')
-    if adapter.LIMITATIONS:
-        progress.phase('Limitations:\n' + ''.join(f'- {item}\n' for item in adapter.LIMITATIONS).rstrip())
-    if experimental:
-        progress.phase('This device has not been tested yet, proceed at your own risk!')
-    prompt = f'Install Linux on {adapter.NAME}? ' + ('[y/N] ' if experimental else '[Y/n] ')
-    answer = ask(clock, prompt, input_fn)
-    if answer.lower() not in (('y', 'yes') if experimental else ('', 'y', 'yes')):
+    for line in caveats(adapter):
+        progress.phase(line)
+    answer = ask(clock, f'Install Linux on {adapter.NAME}? [Y/n] ', input_fn)
+    if answer.lower() not in ('', 'y', 'yes'):
         progress.phase('Cancelled; no download or device mutation performed')
         return {'cancelled': True}
     record = assets = None
