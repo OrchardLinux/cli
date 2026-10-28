@@ -222,7 +222,7 @@ class RecipeSteps(unittest.TestCase):
         output, _ = z2fw.convert_mtfw(apple_xml(payload), 'TEST,6', otp_preflight=True)
         im4p = der(0x30, der(0x16, b'IM4P') + der(0x16, b'mtfw') + der(0x16, b'touch') + der(0x04, payload))
         steps = [{'step': 'im4p-payload@1', 'input': 'touch'},
-                 {'step': 'z2fw-from-mtfw@1', 'input': 'touch', 'profile': 'TEST,6', 'otp_preflight': True}]
+                 {'step': 'z2fw-from-mtfw@1', 'profile': 'TEST,6', 'otp_preflight': True}]
         document = recipe.supported(self.document(steps, im4p, output))
         self.assertEqual(recipe.run(document, lambda name: im4p), {'lib/firmware/apple/touch.z2fw': output})
 

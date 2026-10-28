@@ -52,6 +52,18 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(recipe.needed_inputs(document), ['blob'])
         self.assertEqual(recipe.needed_inputs(document, []), [])
 
+    def test_later_steps_take_the_previous_result(self):
+        container = der(0x30, der(0x16, b'IM4P') + der(0x16, b'mtfw') + der(0x16, b'touch')
+                        + der(0x04, b'firmware'))
+        document = sample([{'step': 'im4p-payload@1', 'input': 'blob'}, {'step': 'copy@1'}], container)
+        document['outputs'][0]['sha256'] = sha(b'firmware')
+        recipe.check(document)
+        self.assertEqual(recipe.run(document, lambda name: container),
+                         {'lib/firmware/apple/blob': b'firmware'})
+        document['outputs'][0]['steps'][1]['input'] = 'blob'
+        with self.assertRaisesRegex(ValueError, 'Only the first step'):
+            recipe.supported(document)
+
     def test_im4p_payload(self):
         payload = b'\x7fELF' + bytes(300)
         container = der(0x30, der(0x16, b'IM4P') + der(0x16, b'mtfw') + der(0x16, b'touch')

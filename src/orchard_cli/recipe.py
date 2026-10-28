@@ -89,6 +89,10 @@ def supported(recipe):
     if recipe.get('schema') != 2:
         raise UnsupportedRecipe('This firmware recipe format needs a newer Orchard')
     for output in recipe['outputs']:
+        # The first step reads a recipe input; each later step, the previous result.
+        if not output['steps'] or 'input' not in output['steps'][0] or \
+                any('input' in step for step in output['steps'][1:]):
+            raise ValueError('Only the first step of an output names an input: ' + output['destination'])
         for step in output['steps']:
             if step['step'] not in STEPS:
                 raise UnsupportedRecipe(f"This firmware recipe needs step {step['step']}; "
@@ -100,7 +104,7 @@ def supported(recipe):
                 # bool is an int subclass; neither stands in for the other.
                 if not isinstance(step[name], kind) or isinstance(step[name], bool) != (kind is bool):
                     raise ValueError(f"Parameter {name} of {step['step']} must be {kind.__name__}")
-            if step['input'] not in recipe['inputs']:
+            if 'input' in step and step['input'] not in recipe['inputs']:
                 raise ValueError('Unknown recipe input: ' + step['input'])
     destinations = [output['destination'] for output in recipe['outputs']]
     if len(set(destinations)) != len(destinations):
@@ -110,7 +114,7 @@ def supported(recipe):
 
 def needed_inputs(recipe, outputs=None):
     outputs = recipe['outputs'] if outputs is None else outputs
-    return sorted({step['input'] for output in outputs for step in output['steps']})
+    return sorted({output['steps'][0]['input'] for output in outputs})
 
 
 def run(recipe, read_input, outputs=None):
@@ -131,10 +135,10 @@ def run(recipe, read_input, outputs=None):
 
     result = {}
     for output in recipe['outputs'] if outputs is None else outputs:
-        data = None
+        data = source(output['steps'][0]['input'])
         for step in output['steps']:
             implementation, _ = STEPS[step['step']]
-            data = implementation(step, source(step['input']) if data is None else data, output['sha256'])
+            data = implementation(step, data, output['sha256'])
         if hashlib.sha256(data).hexdigest() != output['sha256']:
             raise ValueError('Firmware output differs from the recipe: ' + output['destination'])
         result[output['destination']] = data
