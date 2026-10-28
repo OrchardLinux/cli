@@ -35,7 +35,8 @@ INIT, SEND, WAIT, CONFIG, RAW_XFER, CALIBRATION = 0, 1, 3, 4, 5, 6
 # drivers/input/touchscreen/apple_z2.c), keyed by the ADT property name.
 PROVIDERS = {'multi-touch-calibration': 0, 'orb-gap-cal': 1, 'orb-force-cal': 2,
              'shape-dynamic-accel-cal': 3, 'multitouch-to-display-offset': 4,
-             'firefly-calibration': 5, 'pressure-effect-correction': 6}
+             'firefly-calibration': 5, 'pressure-effect-correction': 6,
+             'firefly-p100-calibration': 7, 'ext-multi-touch-calibration': 8}
 
 
 def uint(value, name, maximum=0xffffffff):
@@ -352,8 +353,9 @@ def convert_mtfw(mtfw, profile, *, otp_preflight):
     """MTFW personality listing HBPP load items (ReadModifyWrite, Binary, Property, Config).
 
     Same commands, order and words as makez2fw, except that each Property
-    (per-unit calibration, which makez2fw loads from SysCfg) becomes a
-    calibration record.
+    (per-unit calibration, which makez2fw loads from SysCfg) loads Apple's
+    default payload, then a calibration record. apple_z2 skips a record
+    whose DT property is missing, so such a unit keeps the default.
     """
     items = mtfw.get(profile) if isinstance(mtfw, dict) else None
     if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
@@ -383,6 +385,8 @@ def convert_mtfw(mtfw, profile, *, otp_preflight):
             records.append((SEND, encode_blob(address, item.get('Payload'))))
             loads.append({'address': address, 'bytes': len(item['Payload'])})
         elif kind == 'Property':
+            if item.get('Payload'):
+                records.append((SEND, encode_blob(address, item['Payload'])))
             records.append(calibration_record(item.get('Property'), address, item.get('MaxSize'), providers))
         else:
             raise ValueError('Unsupported HBPP item type: ' + str(kind))

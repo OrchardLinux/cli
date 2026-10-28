@@ -136,29 +136,38 @@ class MtfwConversion(unittest.TestCase):
         self.assertEqual(sha(output), '23f44fec2e6e8c49f77567cc4dc6b7f1dee1666dc2fb0c35df6e61f371d62d87')
         self.assertTrue(info['otp_preflight'])
 
-    def test_property_becomes_a_calibration_record_in_place(self):
+    def test_property_loads_the_default_then_a_calibration_record_in_place(self):
         root = apple_xml(mtfw_fixture())
         output, info = z2fw.convert_mtfw(root, 'TEST,6', otp_preflight=True)
-        self.assertEqual(sha(output), 'e42663f22b32718725a5c219494ed7d7bfc573384115677e35e0362d28d9f66c')
+        self.assertEqual(sha(output), '4edff904c3206be551f7d762069cb19ae388fb9f757fdfa386153d890fb4de7e')
         records = z2fw.decode_container(output)
         commands = [code for code, _ in records]
         self.assertEqual(commands[:2], [z2fw.CONFIG, z2fw.INIT])
         self.assertEqual(commands[-5:], [z2fw.SEND, z2fw.SEND, z2fw.CALIBRATION, z2fw.SEND, z2fw.WAIT])
+        # Apple's default stays loaded on a unit whose ADT lacks the property.
+        self.assertEqual(z2fw.decode_blob(records[-4][1]), (0x100400, bytes(8)))
         self.assertEqual(records[-3][1], struct.pack('<III', 0x100400, 0x600, 0))
         self.assertEqual(records[-1][1], struct.pack('<I', 500))
         self.assertEqual(struct.unpack('<11I', records[0][1]),
                          (0x1bff, 17, 125, 10000, 1, 1, 0, 41, 1, 500, 0x104))
-        self.assertEqual(z2fw.decode_blob(records[-4][1]), (0x100000, bytes(range(1, 11)) + b'\0\0'))
-        # Calibration is the only difference from makez2fw: the same file without it matches it.
+        self.assertEqual(z2fw.decode_blob(records[-5][1]), (0x100000, bytes(range(1, 11)) + b'\0\0'))
+        # A Property item adds only its default and its record (makez2fw loads just the default).
         plain = z2fw.decode_container(z2fw.convert_mtfw(apple_xml(mtfw_fixture(False)), 'TEST,6',
                                                         otp_preflight=True)[0])
-        self.assertEqual(records[:-3] + records[-2:], plain)
+        self.assertEqual(records[:-4] + records[-2:], plain)
         without_otp = z2fw.decode_container(z2fw.convert_mtfw(root, 'TEST,6', otp_preflight=False)[0])
         self.assertEqual(without_otp, records[:2] + records[2 + 3 + 9:])
 
+    def test_ipad7_providers(self):
+        for name, provider in (('firefly-p100-calibration', 7), ('ext-multi-touch-calibration', 8)):
+            root = apple_xml(mtfw_fixture())
+            root['TEST,6'][2]['Property'] = name
+            records = z2fw.decode_container(z2fw.convert_mtfw(root, 'TEST,6', otp_preflight=True)[0])
+            self.assertEqual(records[-3][1], struct.pack('<III', 0x100400, 0x600, provider))
+
     def test_refuses_unknown_providers_per_unit_binaries_and_missing_profiles(self):
         root = apple_xml(mtfw_fixture())
-        root['TEST,6'][2]['Property'] = 'firefly-p100-calibration'
+        root['TEST,6'][2]['Property'] = 'unknown-calibration'
         with self.assertRaisesRegex(ValueError, 'No apple_z2 calibration provider'):
             z2fw.convert_mtfw(root, 'TEST,6', otp_preflight=True)
         root = apple_xml(mtfw_fixture())
