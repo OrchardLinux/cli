@@ -54,10 +54,20 @@ class UnsupportedRecipe(ValueError):
 
 
 def check(recipe):
-    """Validate the recipe and confirm every step is implemented, before any work."""
+    """Validate the recipe against the hardware schema, then its steps (host side)."""
     from orchard_cli.manifests import firmware_schema
     import jsonschema
     jsonschema.validate(recipe, firmware_schema(), cls=jsonschema.Draft202012Validator)
+    return supported(recipe)
+
+
+def supported(recipe):
+    """Confirm every step is implemented with its parameters, before any work.
+
+    Needs no schema or hardware package, so the in-app installer can use it.
+    """
+    if recipe.get('schema') != 2:
+        raise UnsupportedRecipe('This firmware recipe format needs a newer Orchard')
     for output in recipe['outputs']:
         for step in output['steps']:
             if step['step'] not in STEPS:
