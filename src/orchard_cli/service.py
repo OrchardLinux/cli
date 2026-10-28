@@ -209,9 +209,12 @@ def caveats(adapter):
     """What to know before installing: features that are not working, free-text caveats."""
     import orchard_hardware
     labels = orchard_hardware.features()
-    states = {'partial': 'partial', 'untested': 'untested', 'missing': 'not working yet'}
-    rows = [f'- {label}: {states[adapter.FEATURES[name]]}' for name, label in labels.items()
-            if adapter.FEATURES.get(name) in states]
+    groups = {'missing': 'Not working yet', 'partial': 'Partly working', 'untested': 'Untested'}
+    rows = []
+    for state, title in groups.items():
+        names = [label for name, label in labels.items() if adapter.FEATURES.get(name) == state]
+        if names:
+            rows.append(f'- {title}: ' + ', '.join(names))
     lines = ['Caveats:', *rows, *(f'- {text}' for text in adapter.CAVEATS)] if rows or adapter.CAVEATS else []
     if adapter.STATUS != 'supported':
         lines.append('This device has not been tested yet, proceed at your own risk!')
