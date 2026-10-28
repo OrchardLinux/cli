@@ -61,7 +61,7 @@ class LaunchFlow(unittest.TestCase):
                 self.assertEqual(sum(c.args[0]=='launch' for c in client.call.call_args_list),1)
                 self.assertEqual(resolve.call_args.kwargs['purpose'],'boot')
                 if manifest is None:
-                    selected_manifest.assert_called_once_with('j71b')
+                    self.assertEqual(selected_manifest.call_args.args[0], 'j71b')
                     self.assertEqual(resolve.call_args.args[0], 'https://example.invalid/j71b.boot.toml')
                 else:
                     selected_manifest.assert_not_called()

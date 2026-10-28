@@ -145,6 +145,7 @@ class HostWorkflow(unittest.TestCase):
                 self.assertIsNone(saved['timing']['install_seconds'])
                 return wait_ready(client, progress)
             with patch('orchard_cli.service.choose', return_value=(adapter, {'mode':'dfu', 'location':'opaque', 'ecid':1, 'resumed':False})), \
+                 patch('orchard_cli.service.record_launcher') as recorded, \
                  patch('orchard_cli.service.resolve', side_effect=acquire_assets), \
                  patch('orchard_cli.service.Client', return_value=device), \
                  patch('orchard_cli.state.cache_root', return_value=root), \

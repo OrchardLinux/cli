@@ -17,7 +17,7 @@ def launch(manifest=None, *, directory=None, target=None, allow_firmware_downloa
     adapter, device = choose()
     if ask(clock, f'Launch an installed system on {adapter.NAME}? [y/N] ', input_fn).lower() not in ('y','yes'):
         return {'cancelled':True}
-    manifest = manifest if manifest is not None else launch_manifest(adapter.PROFILE)
+    manifest = manifest if manifest is not None else launch_manifest(adapter.PROFILE, device.get('ecid'))
     record, assets = resolve(manifest, adapter.PROFILE, progress, clock=clock, purpose='boot')
     if not device['resumed']:
         adapter.boot(device, assets, record, progress)

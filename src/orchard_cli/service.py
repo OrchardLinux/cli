@@ -11,7 +11,7 @@ from .state import exclusive_operation, private_directory
 from .contracts import Adapter
 from .progress import Clock, Progress
 from .protocol import Client, DeviceError
-from .releases import default_manifest, resolve
+from .releases import default_manifest, record_launcher, resolve
 from .devices import choose
 
 
@@ -284,6 +284,8 @@ def install(manifest=None, *, input_fn=input, progress=None):
             with assets['root'].open('rb') as source:
                 result = client.call('install', {**destination, **record['assets']['root']},
                                      source=source, size=record['assets']['root']['bytes'], timeout=1200)
+            # This installation is launched by the current launcher from now on.
+            record_launcher(adapter.PROFILE, device['ecid'])
             snapshot = clock.result()
             save_report(private / 'last-install.json', {
                 **identity, 'installed': True, 'ready': None, 'release': record['release'],

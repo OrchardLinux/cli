@@ -217,7 +217,7 @@ class ManifestContracts(unittest.TestCase):
     def test_hardware_launch_manifest_is_optional_and_requires_https(self):
         document = load(device_path('j71b'))
         self.assertEqual(document['boot']['launch_manifest'],
-                         'https://github.com/OrchardLinux/hardware/releases/latest/download/j71b-launcher.boot.toml')
+                         'https://github.com/OrchardLinux/hardware/releases/latest/download/j71b-apple-launcher.boot.toml')
         for value in ('http://example.invalid/boot.toml', '/local/boot.toml', '', True):
             with self.subTest(value=value):
                 invalid = deepcopy(document)
