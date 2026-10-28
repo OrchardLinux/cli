@@ -10,6 +10,7 @@ import plistlib
 import struct
 import unittest
 
+from orchard_cli import recipe
 from orchard_cli.apple import z2fw
 from orchard_cli.apple.osserialize import apple_xml
 
@@ -195,6 +196,52 @@ class PacketArrayConversion(unittest.TestCase):
         profile['Constructed Firmware'] = b'\x18\xe1'
         with self.assertRaisesRegex(ValueError, 'array-form'):
             z2fw.convert_packets(profile, apple_xml(profile['Firmware Config']), packet='TESTPKT')
+
+
+class RecipeSteps(unittest.TestCase):
+    def document(self, steps, data, output):
+        return {
+            'schema': 2, 'device': 'iPad7,12',
+            'ipsw': {'version': '18.7.11', 'build': '22H384', 'bytes': 1, 'sha256': '0' * 64,
+                     'url': 'https://updates.cdn-apple.com/x.ipsw'},
+            'inputs': {'touch': {'ipsw': {'zip': 'Firmware/touch.im4p'}, 'sha256': sha(data)}},
+            'outputs': [{'destination': 'lib/firmware/apple/touch.z2fw', 'sha256': sha(output), 'steps': steps}],
+        }
+
+    def test_mtfw_from_an_im4p_through_two_steps(self):
+        payload = mtfw_fixture()
+        output, _ = z2fw.convert_mtfw(apple_xml(payload), 'TEST,6', otp_preflight=True)
+        im4p = der(0x30, der(0x16, b'IM4P') + der(0x16, b'mtfw') + der(0x16, b'touch') + der(0x04, payload))
+        steps = [{'step': 'im4p-payload@1', 'input': 'touch'},
+                 {'step': 'z2fw-from-mtfw@1', 'input': 'touch', 'profile': 'TEST,6', 'otp_preflight': True}]
+        document = recipe.supported(self.document(steps, im4p, output))
+        self.assertEqual(recipe.run(document, lambda name: im4p), {'lib/firmware/apple/touch.z2fw': output})
+
+    def test_mtprops_packet_array_step(self):
+        data = mtprops_fixture()
+        output, _ = convert_packets(data)
+        steps = [{'step': 'z2fw-from-mtprops@2', 'input': 'touch', 'profile': 'TEST,2', 'packet': 'TESTPKT'}]
+        document = recipe.supported(self.document(steps, data, output))
+        self.assertEqual(recipe.run(document, lambda name: data), {'lib/firmware/apple/touch.z2fw': output})
+
+    def test_parameter_types_are_checked(self):
+        for step in ({'step': 'z2fw-from-mtfw@1', 'input': 'touch', 'profile': 'TEST,6', 'otp_preflight': 1},
+                     {'step': 'z2fw-from-mtfw@1', 'input': 'touch', 'profile': 6, 'otp_preflight': True},
+                     {'step': 'z2fw-from-mtprops@1', 'input': 'touch', 'profile': 'K1F19,4', 'packet': 'K1HBPP14',
+                      'load_address': True, 'hbpp_version': 0x104}):
+            with self.subTest(step=step), self.assertRaisesRegex(ValueError, 'must be'):
+                recipe.supported(self.document([step], b'', b''))
+        with self.assertRaisesRegex(ValueError, 'Wrong parameters'):
+            recipe.supported(self.document([{'step': 'z2fw-from-mtprops@2', 'input': 'touch', 'profile': 'x'}],
+                                           b'', b''))
+
+
+def der(tag, value):
+    length = len(value)
+    if length < 0x80:
+        return bytes([tag, length]) + value
+    size = (length.bit_length() + 7) // 8
+    return bytes([tag, 0x80 | size]) + length.to_bytes(size, 'big') + value
 
 
 if __name__ == '__main__':
