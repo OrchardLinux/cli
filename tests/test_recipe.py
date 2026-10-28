@@ -65,6 +65,12 @@ class RecipeTests(unittest.TestCase):
             z2packet.extract(corrupt, 'C1F15,1')
         with self.assertRaisesRegex(ValueError, 'No preconstructed'):
             z2packet.extract(profile, 'K1F19,4')
+        from orchard_cli.apple import z2fw
+        records = z2fw.decode_container(z2packet.convert(profile, 'C1F15,1', 0x10009000, 0x400))
+        self.assertEqual([code for code, _ in records], [z2fw.CONFIG, z2fw.CALIBRATION, z2fw.SEND])
+        self.assertEqual(records[2][1], packet)
+        recipe.check(sample([{'step': 'z2fw-from-z2-packet@1', 'input': 'blob', 'profile': 'C1F15,1',
+                              'calibration_address': 0x10009000, 'calibration_size': 0x400}]))
 
     def test_vxd_firmware_step_is_known(self):
         recipe.check(sample([{'step': 'vxd-firmware-from-kernelcache@1', 'input': 'blob'}]))

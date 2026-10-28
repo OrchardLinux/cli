@@ -54,7 +54,7 @@ def _z2fw(step, data, expected):
 
 
 def _z2_packet(step, data, expected):
-    return z2packet.extract(data, step['profile'])
+    return z2packet.convert(data, step['profile'], step['calibration_address'], step['calibration_size'])
 
 
 def _z2fw_packets(step, data, expected):
@@ -81,8 +81,9 @@ STEPS = {
     'im4p-payload@1': (_im4p_payload, {}),
     # mtprops with one preconstructed packet (J71b).
     'z2fw-from-mtprops@1': (_z2fw, {'profile': str, 'packet': str, 'load_address': int, 'hbpp_version': int}),
-    # mtprops with one complete preconstructed Z2 boot packet, uploaded as is (iPad 5).
-    'z2-packet-from-mtprops@1': (_z2_packet, {'profile': str}),
+    # mtprops with one complete preconstructed Z2 boot packet (iPad 5), wrapped unmodified.
+    'z2fw-from-z2-packet@1': (_z2_packet, {'profile': str, 'calibration_address': int,
+                                           'calibration_size': int}),
     # mtprops with an array of preconstructed packets (iPhone 7 Plus), makez2fw's layout.
     'z2fw-from-mtprops@2': (_z2fw_packets, {'profile': str, 'packet': str}),
     # MTFW (IM4P payload) with HBPP load items per personality (iPad 7), makez2fw's layout.
