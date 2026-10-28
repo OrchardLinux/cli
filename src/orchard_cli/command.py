@@ -24,6 +24,19 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='show internal device events')
     parser.add_argument('--profile', choices=('j71b', 'p105'), help='select a device profile explicitly')
     commands = parser.add_subparsers(dest='action', required=True)
+    build = commands.add_parser('build', help='build DIRECTORY/init and optional DIRECTORY/rootfs into a RAM payload')
+    build.add_argument('directory', type=Path, help='any directory containing init and optional rootfs/')
+    build.add_argument('--hardware', type=Path, help='override the active orchard-hardware package resources')
+    build.add_argument('--device', help='override the default recipe selected by orchard.toml')
+    build.add_argument('--cache', type=Path, help='override the shared component cache')
+    build.add_argument('--kernel-dir', type=Path, help='reuse a staged kernel/DTB/module tree')
+    for component in ('pongo', 'busybox', 'loader'):
+        build.add_argument('--' + component, type=Path, help='reuse this local component')
+    build.add_argument('--modules', action='store_true', help='include matching modules for manual use; does not load them')
+    run = commands.add_parser('run', help='boot the last successful RAM payload for DIRECTORY')
+    run.add_argument('directory', type=Path, help='any directory whose out/ contains the built payload')
+    run.add_argument('-y', '--yes', action='store_true',
+                     help='boot without prompting, including without an interactive terminal')
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
@@ -84,6 +97,16 @@ def main():
     args = parser.parse_args()
     progress = Progress(verbose=args.verbose)
     try:
+        if args.action == 'build':
+            from orchard_cli.ram import build_directory
+            build_directory(args.directory, hardware=args.hardware, cache=args.cache,
+                            kernel=args.kernel_dir, busybox=args.busybox, loader=args.loader,
+                            pongo=args.pongo, modules=args.modules, device=args.device)
+            return
+        if args.action == 'run':
+            from orchard_cli.boot import run_directory
+            run_directory(args.directory, yes=args.yes)
+            return
         with ExitStack() as stack:
             if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host', 'p105-manifest'):
                 stack.enter_context(operation_lock())
