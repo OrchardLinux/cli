@@ -28,24 +28,44 @@ def _im4p_payload(step, data, expected):
     return im4p_payload(data)
 
 
-def _z2fw(step, data, expected):
-    profiles = plistlib.loads(data)
-    profile = profiles.get(step['profile'])
+def _touch_profile(data, name):
+    profile = plistlib.loads(data).get(name)
     if not isinstance(profile, dict):
-        raise ValueError('Touch profile not found: ' + str(step['profile']))
+        raise ValueError('Touch profile not found: ' + str(name))
+    return profile
+
+
+def _z2fw(step, data, expected):
+    profile = _touch_profile(data, step['profile'])
     output, _ = z2fw.convert(profile, apple_xml(profile['Firmware Config']),
                              packet=step['packet'], load_address=step['load_address'],
                              hbpp_version=step['hbpp_version'])
     return output
 
 
-# step@version -> (implementation, parameters besides 'step' and 'input')
+def _z2fw_packets(step, data, expected):
+    profile = _touch_profile(data, step['profile'])
+    output, _ = z2fw.convert_packets(profile, apple_xml(profile['Firmware Config']), packet=step['packet'])
+    return output
+
+
+def _z2fw_mtfw(step, data, expected):
+    output, _ = z2fw.convert_mtfw(apple_xml(data), step['profile'], otp_preflight=step['otp_preflight'])
+    return output
+
+
+# step@version -> (implementation, {parameter besides 'step' and 'input': type})
 STEPS = {
-    'copy@1': (_copy, set()),
-    'bluetool-hcd@1': (_bluetool_hcd, set()),
-    'smartio-from-kernelcache@1': (_smartio, set()),
-    'im4p-payload@1': (_im4p_payload, set()),
-    'z2fw-from-mtprops@1': (_z2fw, {'profile', 'packet', 'load_address', 'hbpp_version'}),
+    'copy@1': (_copy, {}),
+    'bluetool-hcd@1': (_bluetool_hcd, {}),
+    'smartio-from-kernelcache@1': (_smartio, {}),
+    'im4p-payload@1': (_im4p_payload, {}),
+    # mtprops with one preconstructed packet (J71b).
+    'z2fw-from-mtprops@1': (_z2fw, {'profile': str, 'packet': str, 'load_address': int, 'hbpp_version': int}),
+    # mtprops with an array of preconstructed packets (iPhone 7 Plus), makez2fw's layout.
+    'z2fw-from-mtprops@2': (_z2fw_packets, {'profile': str, 'packet': str}),
+    # MTFW (IM4P payload) with HBPP load items per personality (iPad 7), makez2fw's layout.
+    'z2fw-from-mtfw@1': (_z2fw_mtfw, {'profile': str, 'otp_preflight': bool}),
 }
 
 
@@ -74,8 +94,12 @@ def supported(recipe):
                 raise UnsupportedRecipe(f"This firmware recipe needs step {step['step']}; "
                                         'update Orchard to a version that implements it')
             _, parameters = STEPS[step['step']]
-            if set(step) - {'step', 'input'} != parameters:
+            if set(step) - {'step', 'input'} != set(parameters):
                 raise ValueError(f"Wrong parameters for {step['step']}: {sorted(set(step) - {'step', 'input'})}")
+            for name, kind in parameters.items():
+                # bool is an int subclass; neither stands in for the other.
+                if not isinstance(step[name], kind) or isinstance(step[name], bool) != (kind is bool):
+                    raise ValueError(f"Parameter {name} of {step['step']} must be {kind.__name__}")
             if step['input'] not in recipe['inputs']:
                 raise ValueError('Unknown recipe input: ' + step['input'])
     destinations = [output['destination'] for output in recipe['outputs']]
