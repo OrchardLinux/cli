@@ -8,7 +8,7 @@ import hashlib
 import json
 import plistlib
 
-from orchard_cli.apple import d5500, ipsw, smartio, z2fw
+from orchard_cli.apple import d5500, ipsw, smartio, z2fw, z2packet
 from orchard_cli.apple.osserialize import apple_xml
 
 
@@ -53,6 +53,10 @@ def _z2fw(step, data, expected):
     return output
 
 
+def _z2_packet(step, data, expected):
+    return z2packet.extract(data, step['profile'])
+
+
 def _z2fw_packets(step, data, expected):
     profile = _touch_profile(data, step['profile'])
     output, _ = z2fw.convert_packets(profile, apple_xml(profile['Firmware Config']), packet=step['packet'])
@@ -77,6 +81,8 @@ STEPS = {
     'im4p-payload@1': (_im4p_payload, {}),
     # mtprops with one preconstructed packet (J71b).
     'z2fw-from-mtprops@1': (_z2fw, {'profile': str, 'packet': str, 'load_address': int, 'hbpp_version': int}),
+    # mtprops with one complete preconstructed Z2 boot packet, uploaded as is (iPad 5).
+    'z2-packet-from-mtprops@1': (_z2_packet, {'profile': str}),
     # mtprops with an array of preconstructed packets (iPhone 7 Plus), makez2fw's layout.
     'z2fw-from-mtprops@2': (_z2fw_packets, {'profile': str, 'packet': str}),
     # MTFW (IM4P payload) with HBPP load items per personality (iPad 7), makez2fw's layout.
