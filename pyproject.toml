@@ -23,7 +23,7 @@ orch = "orchard_cli.command:main"
 
 [tool.setuptools]
 include-package-data = false
-packages = ["orchard_cli", "orchard_cli.j71b", "orchard_cli.apple", "orchard_cli.transports", "orchard_cli_schemas"]
+packages = ["orchard_cli", "orchard_cli.apple", "orchard_cli.transports", "orchard_cli_schemas"]
 package-dir = {"" = "src", orchard_cli_schemas = "schemas"}
 
 [tool.setuptools.package-data]
@@ -36,12 +36,12 @@ dev = ["mypy==1.18.2"]
 [tool.mypy]
 python_version = "3.9"
 mypy_path = "src"
-files = ["src/orchard_cli/contracts.py", "src/orchard_cli/devices.py", "src/orchard_cli/j71b/adapter.py", "src/orchard_cli/j71b/inputs.py", "src/orchard_cli/j71b/mixin.py", "src/orchard_cli/service.py", "src/orchard_cli/command.py", "tests/typecheck_adapter.py"]
+files = ["src/orchard_cli/contracts.py", "src/orchard_cli/devices.py", "src/orchard_cli/apple/device.py", "src/orchard_cli/service.py", "src/orchard_cli/command.py", "tests/typecheck_adapter.py"]
 check_untyped_defs = true
 follow_imports = "silent"
 ignore_missing_imports = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["orchard_cli.contracts", "orchard_cli.devices", "orchard_cli.j71b.adapter", "orchard_cli.j71b.inputs", "orchard_cli.j71b.mixin"]
+module = ["orchard_cli.contracts", "orchard_cli.devices", "orchard_cli.apple.device"]
 disallow_untyped_defs = true
