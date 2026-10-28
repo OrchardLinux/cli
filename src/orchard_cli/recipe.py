@@ -8,7 +8,7 @@ import hashlib
 import json
 import plistlib
 
-from orchard_cli.apple import ipsw, smartio, z2fw
+from orchard_cli.apple import d5500, ipsw, smartio, z2fw
 from orchard_cli.apple.osserialize import apple_xml
 
 
@@ -22,6 +22,16 @@ def _bluetool_hcd(step, data, expected):
 
 def _smartio(step, data, expected):
     return smartio.extract(data)[0]
+
+
+def _smartio_kext(step, data, expected):
+    if step['kext'] not in smartio.BUNDLES:
+        raise ValueError('Unknown SmartIO kext: ' + step['kext'])
+    return smartio.extract(data, step['kext'])[0]
+
+
+def _vxd(step, data, expected):
+    return d5500.extract(data)[0]
 
 
 def _im4p_payload(step, data, expected):
@@ -58,7 +68,12 @@ def _z2fw_mtfw(step, data, expected):
 STEPS = {
     'copy@1': (_copy, {}),
     'bluetool-hcd@1': (_bluetool_hcd, {}),
+    # T8010 SmartIO kext (iPad 6/7, iPhone 7).
     'smartio-from-kernelcache@1': (_smartio, {}),
+    # SmartIO kext named by bundle identifier (S8000 for A9).
+    'smartio-from-kernelcache@2': (_smartio_kext, {'kext': str}),
+    # VXD (DEVA) video-decoder firmware from AppleD5500.
+    'vxd-firmware-from-kernelcache@1': (_vxd, {}),
     'im4p-payload@1': (_im4p_payload, {}),
     # mtprops with one preconstructed packet (J71b).
     'z2fw-from-mtprops@1': (_z2fw, {'profile': str, 'packet': str, 'load_address': int, 'hbpp_version': int}),

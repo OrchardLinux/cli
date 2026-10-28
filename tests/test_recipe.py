@@ -36,6 +36,19 @@ class RecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Wrong parameters'):
             recipe.check(sample([{'step': 'copy@1', 'input': 'blob', 'profile': 'x'}]))
 
+    def test_smartio_kext_is_named_and_checked(self):
+        recipe.check(sample([{'step': 'smartio-from-kernelcache@2', 'input': 'blob',
+                              'kext': 'com.apple.driver.AppleS8000SmartIO'}]))
+        with self.assertRaisesRegex(ValueError, 'Wrong parameters'):
+            recipe.check(sample([{'step': 'smartio-from-kernelcache@2', 'input': 'blob'}]))
+        document = recipe.check(sample([{'step': 'smartio-from-kernelcache@2', 'input': 'blob',
+                                         'kext': 'com.apple.driver.AppleX9999SmartIO'}]))
+        with self.assertRaisesRegex(ValueError, 'Unknown SmartIO kext'):
+            recipe.run(document, lambda name: b'firmware')
+
+    def test_vxd_firmware_step_is_known(self):
+        recipe.check(sample([{'step': 'vxd-firmware-from-kernelcache@1', 'input': 'blob'}]))
+
     def test_inputs_and_outputs_are_hash_checked(self):
         document = recipe.check(sample([{'step': 'copy@1', 'input': 'blob'}]))
         self.assertEqual(recipe.run(document, lambda name: b'firmware'),
