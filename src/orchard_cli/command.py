@@ -51,11 +51,9 @@ def main():
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
-    launcher = commands.add_parser('launch', help='start an existing installation through shared recovery; no root download')
-    launcher.add_argument('--manifest', help='override the device-selected launch manifest (development/testing)')
-    launcher.add_argument('--directory', help='installed root directory, such as /omarchy')
-    launcher.add_argument('--target', help='installed partition PARTUUID')
-    launcher.add_argument('--allow-firmware-download', action='store_true', help='allow IPSW acquisition if verified host firmware cache is missing')
+    launcher = commands.add_parser('launch', help="start an installed system from the device's boot entries")
+    launcher.add_argument('--manifest', help='override the device-selected bootloader manifest (development/testing)')
+    launcher.add_argument('--entry', help='boot entry id to start without asking')
     distros = commands.add_parser('distros', help='list or register distro index locations')
     distros.add_argument('name', nargs='?')
     distros.add_argument('source', nargs='?')
@@ -128,8 +126,7 @@ def main():
                 result = install(source, progress=progress)
             elif args.action == 'launch':
                 from orchard_cli.launch import launch
-                result = launch(args.manifest, directory=args.directory, target=args.target,
-                                allow_firmware_download=args.allow_firmware_download, progress=progress)
+                result = launch(args.manifest, entry=args.entry, progress=progress)
             elif args.action == 'distros':
                 if bool(args.name) != bool(args.source):
                     raise ValueError('Use orchard distros NAME INDEX_URL_OR_FILE, or orchard distros to list')

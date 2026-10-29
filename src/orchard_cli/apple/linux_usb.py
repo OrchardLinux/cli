@@ -33,3 +33,19 @@ def devices(root=Path('/sys/bus/usb/devices')):
                           pwned='YOLO:checkra1n' in serial, product=product,
                           serial_port=next(iter(ports), None)))
     return found
+
+
+def m1n1_ports(root=Path('/sys/bus/usb/devices')):
+    """Proxy (first CDC-ACM interface) tty of every m1n1 USB device."""
+    found = []
+    for node in root.iterdir():
+        try:
+            if (int((node / 'idVendor').read_text().strip(), 16), int((node / 'idProduct').read_text().strip(), 16)) \
+                    != (0x1209, 0x316d):
+                continue
+        except (OSError, ValueError):
+            continue
+        ports = sorted(str(Path('/dev') / p.name) for p in node.glob(node.name + ':*.0/tty/ttyACM*'))
+        if ports:
+            found.append(ports[0])
+    return found

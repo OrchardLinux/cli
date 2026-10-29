@@ -27,6 +27,8 @@ class Device:
         self.PRODUCT = descriptor['match'].get('linux', {}).get('product')
         self.CHIP = descriptor['match']['dfu']['chip']
         self.BOARD = descriptor['match']['dfu']['board']
+        dtb = descriptor.get('kernel', {}).get('dtb')
+        self.DEVICETREE = dtb + '.dtb' if dtb else None
         support = descriptor.get('support', {})
         self.INSTALL = bool(support.get('install', False))
         self.STATUS = support.get('status', 'experimental')
@@ -88,3 +90,8 @@ class Device:
              manifest: BootRequest, progress: Progress) -> None:
         return apple_boot.boot(device, assets, manifest, progress,
                                profile=self.PROFILE, chip=self.CHIP, board=self.BOARD, product=self.PRODUCT)
+
+    def start_loader(self, device: SelectedDevice, assets: BootAssets,
+                     manifest: BootRequest, progress: Progress) -> str:
+        return apple_boot.start_loader(device, assets, manifest, progress, profile=self.PROFILE,
+                                       chip=self.CHIP, board=self.BOARD, product=self.PRODUCT)

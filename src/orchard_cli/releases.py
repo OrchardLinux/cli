@@ -37,6 +37,9 @@ def record_launcher(profile, ecid):
     temporary.replace(path)
 
 
+LOADER_PROTOCOL = 2
+
+
 def launch_manifest(profile, ecid=None):
     """Select public launch assets from the detected device, never a distro.
 
@@ -197,13 +200,16 @@ def select_manifest(source, profile, progress=None, clock=None, purpose='install
         bundle = local_bundle if 'file' in receipt else None
     elif expected_distro and document.get('distro') != expected_distro:
         raise ValueError('Registered distro does not match manifest')
-    allowed = ('orchard.install',) if purpose == 'install' else ('orchard.install', 'orchard.boot')
+    allowed = {'install': ('orchard.install',), 'launch': ('orchard.boot',)}.get(
+        purpose, ('orchard.install', 'orchard.boot'))
     if document['kind'] not in allowed or document['device'] != profile:
         raise ValueError('Manifest is not compatible with this device/operation')
     if document['boot_method'] != 'checkm8-pongo':
         raise ValueError('This Orchard build implements only checkm8-pongo')
-    if document['protocol'] != 1:
-        raise ValueError('Unsupported device protocol')
+    # Protocol 2: the boot asset is the storage-capable m1n1 that reads boot
+    # entries from the device (hardware docs/boot-contract.md).
+    if document['protocol'] != (LOADER_PROTOCOL if purpose == 'launch' else 1):
+        raise ValueError('Unsupported device protocol; this launch manifest is for another Orchard version')
     actual = tuple(int(part) for part in version('orchard-cli').split('.'))
     minimum = tuple(int(part) for part in document['min_orchard'].split('.'))
     if actual < minimum:

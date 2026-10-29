@@ -86,6 +86,8 @@ class Adapter(Protocol):
     STATUS: str
     CAVEATS: List[str]
     FEATURES: Dict[str, str]
+    # Board DTB file name a boot entry must carry (from [kernel] dtb).
+    DEVICETREE: Optional[str]
 
     def matches_dfu(self, device: Dict[str, Any]) -> bool: ...
 
@@ -95,6 +97,9 @@ class Adapter(Protocol):
 
     def boot(self, device: SelectedDevice, assets: BootAssets,
              manifest: BootRequest, progress: Progress) -> None: ...
+
+    def start_loader(self, device: SelectedDevice, assets: BootAssets,
+                     manifest: BootRequest, progress: Progress) -> str: ...
 
     def connect(self, device: SelectedDevice) -> AbstractContextManager[Connection]: ...
 
