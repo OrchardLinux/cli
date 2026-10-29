@@ -202,10 +202,12 @@ def _prepare_kernel(hardware, cache, device):
     platform = kernels.layout(hardware, device)[0]
     base_key = lambda: kernel_base_key(hardware, device, cache)
     def produce_base(stage):
-        kernels.build_base(hardware, cache, device, stage / 'kernel')
+        with kernels.tree_lock(hardware, device):
+            kernels.build_base(hardware, cache, device, stage / 'kernel')
     base = cached_component(components, 'kernel-base-' + platform, base_key, produce_base) / 'kernel'
     def produce_kernel(stage):
-        kernels.build_device(hardware, cache, device, base, stage / 'kernel')
+        with kernels.tree_lock(hardware, device):
+            kernels.build_device(hardware, cache, device, base, stage / 'kernel')
     directory = cached_component(components, 'kernel-' + device,
         lambda: kernel_key(hardware, device, base.parent.name), produce_kernel)
     return directory / 'kernel'
