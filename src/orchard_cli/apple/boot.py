@@ -1,4 +1,6 @@
 """Shared checkm8/Pongo boot sequence; adapters supply device identity constraints."""
+import os
+import signal
 import subprocess
 import shutil
 import time
@@ -45,6 +47,23 @@ def wait_mode(device, mode, *, chip, board, product, seconds=30):
         time.sleep(0.25)
 
 
+def run_process_group(argv, *, timeout, **kwargs):
+    """subprocess.run(check=True) that also stops the command's children.
+
+    palera1n posix_spawns checkra1n and only waits for it. Killing palera1n
+    alone leaves checkra1n running, and it exploits the next DFU device it
+    sees, so give up on the whole process group instead.
+    """
+    with subprocess.Popen(argv, start_new_session=True, **kwargs) as process:
+        try:
+            returncode = process.wait(timeout=timeout)
+        except BaseException:
+            os.killpg(process.pid, signal.SIGKILL)
+            raise
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, argv)
+
+
 def boot(device, assets, manifest, progress, *, profile, chip, board, product):
     if device['mode'] == 'linux':
         progress.phase('Using running recovery; no reboot or upload (timing starts at resume)')
@@ -61,8 +80,8 @@ def boot(device, assets, manifest, progress, *, profile, chip, board, product):
         with tempfile.NamedTemporaryFile(prefix='palera1n-', suffix='.log', dir=logs,
                                          delete=False) as log:
             try:
-                subprocess.run([executable, '-p', '-k', str(assets['pongo'])],
-                               stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
+                run_process_group([executable, '-p', '-k', str(assets['pongo'])],
+                                  stdout=log, stderr=subprocess.STDOUT, timeout=120)
             except (OSError, subprocess.SubprocessError) as error:
                 raise RuntimeError('Pongo bootstrap failed or outcome unknown; inspect USB before any retry. '
                                    f'Log: {log.name}') from error
