@@ -113,8 +113,9 @@ class InstallFlow(unittest.TestCase):
                         'partuuid': '00000000-0000-4000-8000-000000000002', 'fs': 'ext4', 'label': 'OrchardLinux'}], [])
         with self.assertRaisesRegex(ValueError, 'Not confirmed'):
             self.run_install(disk, ['', '1', 'yes'])
-        result, store, prompts, _ = self.run_install(disk, ['', '1', 'erase 2'])
+        result, store, prompts, output = self.run_install(disk, ['', '1', 'erase 2'])
         self.assertEqual(prompts[-1], 'Type "erase 2" to confirm: ')
+        self.assertIn('previous Orchard installer', output)
         self.assertEqual(json.loads((store / 'plan.json').read_text())['remove']['number'], 2)
 
     def test_device_error_is_reported_with_its_detail(self):

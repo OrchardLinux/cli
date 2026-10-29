@@ -68,6 +68,11 @@ def choose_target(layout, clock, *, input_fn=input, output=print):
     option = options[int(answer) - 1]
     if option.kind == 'replace':
         phrase = f'erase {option.partition["number"]}'
+        if option.partition['type'] == install_layout.LINUX_DATA:
+            # Installs from the previous installer were one Linux-data partition; this
+            # installer writes a boot partition and an arm64 root instead.
+            output('This looks like an install from the previous Orchard installer. It cannot be '
+                   'converted: copy anything you want to keep off the device first.')
         output('Everything on that partition will be deleted. No backup is made.')
         if ask(clock, f'Type "{phrase}" to confirm: ', input_fn) != phrase:
             raise ValueError('Not confirmed; nothing was changed')
