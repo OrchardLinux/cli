@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 
-from .apple.boot import run_process_group
 from .ram import verify_ram
 
 
@@ -27,7 +26,7 @@ def boot_ram(output, *, yes=False):
     """Boot once via existing USB/Pongo transport. No recovery API required."""
     from orchard_hardware import device as hardware_device
     from .apple import usb
-    from .apple.boot import wait_mode
+    from .apple.boot import start_pongo
     from .state import operation_lock
     from .transports import pongo
 
@@ -47,8 +46,7 @@ def boot_ram(output, *, yes=False):
         ecid = device.get('ecid')
         if not ecid:
             raise ValueError('Missing device ECID')
-        executable = shutil.which('palera1n')
-        if device['mode'] == 'dfu' and not executable:
+        if device['mode'] == 'dfu' and not shutil.which('palera1n'):
             raise ValueError('Install palera1n before booting')
         name = description['device']['name'] if not mismatch else device.get('product') or 'Unrecognized device'
         print(f'{name}, ECID {ecid:x}, USB {device["location"]}, mode {device["mode"]}.')
@@ -66,11 +64,9 @@ def boot_ram(output, *, yes=False):
         verify_ram(output)
         usb.selected(device['location'], ecid, chip=chip, board=board, mode=device['mode'])
         if device['mode'] == 'dfu':
-            print('Starting Pongo once. Inspect any uncertain failure before retrying.')
             with (output / 'palera1n.log').open('wb') as log:
-                run_process_group([executable, '-p', '-k', str(output / 'pongo.bin')],
-                                  timeout=120, stdout=log, stderr=subprocess.STDOUT)
-            wait_mode(device, 'pongo', chip=chip, board=board, product='', seconds=60)
+                start_pongo(device, output / 'pongo.bin', log, print,
+                            chip=chip, board=board, product='', seconds=60)
         usb.selected(device['location'], ecid, chip=chip, board=board)
         pongo.upload(output / 'linux.bin', device['location'], receipt['files']['linux.bin'])
     print('Upload/boot request sent; Linux readiness has NOT been verified.')

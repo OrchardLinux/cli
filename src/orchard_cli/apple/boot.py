@@ -78,28 +78,38 @@ def run_process_group(argv, *, timeout, **kwargs):
         raise subprocess.CalledProcessError(returncode, argv)
 
 
+def start_pongo(device, image, log, say, *, chip, board, product, seconds=30):
+    """Start Pongo once on the selected device in DFU; never retried.
+
+    Every boot path goes through here so they share the cable hint, the
+    process-group cleanup and the failure message.
+    """
+    executable = shutil.which('palera1n')
+    if not executable:
+        raise ValueError('palera1n is required on the host to boot Pongo')
+    usb.selected(device['location'], device['ecid'], chip=chip, board=board, mode='dfu')
+    say('Booting Pongo')
+    say('Wait for the Apple logo to appear. If it does not disappear after a few seconds, '
+        'disconnect and reconnect the cable at the device once.')
+    try:
+        run_process_group([executable, '-p', '-k', str(image)],
+                          stdout=log, stderr=subprocess.STDOUT, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError('Pongo bootstrap failed or outcome unknown; inspect USB before any retry. '
+                           f'Log: {log.name}') from error
+    return wait_mode(device, 'pongo', chip=chip, board=board, product=product, seconds=seconds)
+
+
 def boot(device, assets, manifest, progress, *, profile, chip, board, product):
     if device['mode'] == 'linux':
         progress.phase('Using running recovery; no reboot or upload (timing starts at resume)')
         return
     if device['mode'] == 'dfu':
-        executable = shutil.which('palera1n')
-        if not executable:
-            raise ValueError('palera1n is required on the host to boot Pongo')
-        usb.selected(device['location'], device['ecid'], chip=chip, board=board, mode='dfu')
-        progress.phase('Booting Pongo')
-        progress.phase('Wait for the Apple logo to appear. If it does not disappear after a few seconds, '
-                       'disconnect and reconnect the cable at the iPad once.')
         logs = private_directory(DeviceState(profile, device['ecid']).root / 'logs')
         with tempfile.NamedTemporaryFile(prefix='palera1n-', suffix='.log', dir=logs,
                                          delete=False) as log:
-            try:
-                run_process_group([executable, '-p', '-k', str(assets['pongo'])],
-                                  stdout=log, stderr=subprocess.STDOUT, timeout=120)
-            except (OSError, subprocess.SubprocessError) as error:
-                raise RuntimeError('Pongo bootstrap failed or outcome unknown; inspect USB before any retry. '
-                                   f'Log: {log.name}') from error
-        wait_mode(device, 'pongo', chip=chip, board=board, product=product)
+            start_pongo(device, assets['pongo'], log, progress.phase,
+                        chip=chip, board=board, product=product)
     progress.phase('Loading recovery')
     usb.selected(device['location'], device['ecid'], chip=chip, board=board)
     progress.reset_transfer()

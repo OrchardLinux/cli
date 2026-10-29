@@ -331,8 +331,10 @@ class RamTests(unittest.TestCase):
                 patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
                 patch('orchard_cli.apple.boot.wait_mode') as wait, \
                 patch.object(boot.shutil, 'which', return_value='/fake/palera1n'), \
-                patch.object(boot, 'run_process_group') as execute:
+                patch('orchard_cli.apple.boot.run_process_group') as execute, \
+                patch('builtins.print') as output:
             boot.boot_ram(self.output, yes=True)
+        self.assertIn('reconnect the cable', str(output.call_args_list))
         selected.assert_any_call('fake', 123, chip=0x8011, board=0x04, mode='dfu')
         selected.assert_any_call('fake', 123, chip=0x8011, board=0x04)
         wait.assert_called_once_with(device, 'pongo', chip=0x8011, board=0x04, product='', seconds=60)
