@@ -15,7 +15,7 @@ from orchard_cli.state import BootState, DeviceState
 from orchard_cli.progress import Clock, Progress
 from orchard_cli.protocol import Client, DeviceError
 from orchard_cli.service import install
-from orchard_cli.apple.ipsw import hcd_from_binary
+from orchard_cli.apple.bluetool import hcd_from_binary
 
 
 BOOT = '11111111-1111-4111-8111-111111111111'

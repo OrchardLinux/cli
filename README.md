@@ -4,7 +4,7 @@ Host-side tools for installing, booting, and debugging Linux on supported Apple 
 
 ## Install or update
 
-Requires Linux or macOS, Python 3.9+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo, udev, and [apfs-fuse](https://github.com/sgan81/apfs-fuse) with its FUSE runtime for firmware extraction. Install `apfs-fuse` separately and put it in PATH, or set `IPSW_APFS_FUSE_PATH` to its executable. `setup-host` checks for the executable before downloading tools or installing USB rules.
+Requires Linux or macOS, Python 3.9+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo and udev. Device firmware is read straight from Apple's restore image by byte range: about 40 MB instead of a 7 GB download, with no extraction tools.
 
 ```sh
 python3 -m venv ~/.local/share/orchard/venv

@@ -78,20 +78,6 @@ sys.argv=['orchard','resolve',MANIFEST];main()
             with self.assertRaisesRegex(ValueError,'Captured ADT is not for'):
                 adapter.capture_adt()
 
-    def test_cached_firmware_archive_is_verified_without_download(self):
-        with tempfile.TemporaryDirectory() as directory:
-            archive = Path(directory)/'archive'
-            archive.write_bytes(b'firmware')
-            checksum = hashlib.sha256(b'firmware').hexdigest()
-            with patch.object(firmware,'download') as download:
-                self.assertEqual(firmware.ensure_archive('https://example.invalid/fw',8,checksum,
-                    archive,Clock(),Mock(),label='Firmware'),archive)
-                download.assert_not_called()
-                archive.write_bytes(b'corrupt!')
-                with self.assertRaisesRegex(ValueError,'digest differs'):
-                    firmware.ensure_archive('https://example.invalid/fw',8,checksum,archive,Clock(),Mock(),label='Firmware')
-                download.assert_not_called()
-
     def test_shared_mixin_packer_rejects_traversal_and_links_before_archiving(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

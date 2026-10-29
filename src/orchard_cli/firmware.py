@@ -2,15 +2,12 @@
 import hashlib
 import io
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shutil
 import tarfile
-import tempfile
-import zipfile
 
 from .cache import cache_root
-from .downloads import download
 from .integrity import digest
 from . import recipe as recipes
 
@@ -18,22 +15,6 @@ from . import recipe as recipes
 def missing_inputs(locations, expected):
     return [name for name, path in locations.items()
             if path.is_symlink() or not path.is_file() or digest(path) != expected[name]]
-
-
-def ensure_archive(url, size, checksum, archive, clock, progress, *, label):
-    archive.parent.mkdir(exist_ok=True)
-    if not archive.exists() or archive.stat().st_size != size:
-        if shutil.disk_usage(archive.parent).free < 2 * size:
-            raise ValueError('Insufficient space for firmware download and extraction')
-        task = progress.task('iPadOS firmware')
-        task.phase('Downloading')
-        task.reset_transfer()
-        with clock.exclude('download'):
-            download(url, size, archive,
-                     progress=lambda row: task.transfer(row['completed_bytes'], row['total_bytes']))
-    if archive.is_symlink() or digest(archive) != checksum:
-        raise ValueError(f'{label} digest differs; retained for inspection')
-    return archive
 
 
 def store_input(path, data, checksum):
@@ -105,7 +86,8 @@ def recipe_for(profile, hardware=None):
 def ensure(profile, clock, progress, *, allow_download=True, hardware=None):
     """Every firmware output of the device's recipe, verified and cached by hash.
 
-    Only missing outputs are produced, from only the IPSW inputs they need.
+    Only missing outputs are produced, from only the IPSW inputs they need,
+    read from Apple's server by byte range (apple/remote_ipsw.py).
     Returns the directory holding the outputs, named by their sha256.
     """
     recipe = recipe_for(profile, hardware)
@@ -120,40 +102,28 @@ def ensure(profile, clock, progress, *, allow_download=True, hardware=None):
         progress.phase('Verified cached firmware')
         return outputs
     if not allow_download:
-        raise ValueError('Verified private firmware cache is missing. Launch does not download an IPSW by default; '
+        raise ValueError('Verified private firmware cache is missing. Launch does not download firmware by default; '
                          'explicitly use --allow-firmware-download to acquire it.')
+    from .apple.remote_ipsw import Ipsw
     source = recipe['ipsw']
-    archive = ensure_archive(source['url'], source['bytes'], source['sha256'],
-                             root / 'archive' / (source['sha256'] + '.ipsw'),
-                             clock, progress, label='Apple IPSW')
-    from .apple import ipsw
-    progress.phase('Extracting firmware…')
-    with tempfile.TemporaryDirectory(prefix='extract-', dir=root) as directory:
-        executable = []
+    task = progress.task('Apple firmware')
+    task.phase('Downloading only the needed parts')
+    task.reset_transfer()
+    with clock.exclude('download'):
+        ipsw = Ipsw(source['url'], source['bytes'], on_bytes=lambda sent: task.transfer(sent, None))
 
         def read_input(name):
-            entry = recipe['inputs'][name]
-            location = entry['ipsw']
+            location = recipe['inputs'][name]['ipsw']
             if 'zip' in location:
-                with zipfile.ZipFile(archive) as bundle:
-                    return bundle.read(location['zip'])
-            if not executable:
-                executable.append(ipsw.tool(clock, progress))
-            target = Path(directory) / name
-            target.mkdir()
+                return ipsw.member(location['zip'])
             if 'kernelcache' in location:
-                return ipsw.extract_kernel(executable[0], archive, recipe['device'], target)
-            ipsw.extract_files(executable[0], archive, (re.escape(location['rootfs']) + '$',), target)
-            leaf = PurePosixPath(location['rootfs']).name
-            matches = [p for p in target.rglob(leaf) if p.is_file() and not p.is_symlink() and
-                       (not entry.get('sha256') or digest(p) == entry['sha256'])]
-            if len(matches) != 1:
-                raise ValueError('Expected one extracted firmware input: ' + name)
-            return matches[0].read_bytes()
+                return ipsw.kernelcache(profile + 'ap')
+            return ipsw.system_file(location['rootfs'])
 
         for destination, data in recipes.run(recipe, read_input, missing).items():
             checksum = next(o['sha256'] for o in missing if o['destination'] == destination)
             store_input(outputs / checksum, data, checksum)
+    task.phase('Verified')
     return outputs
 
 
