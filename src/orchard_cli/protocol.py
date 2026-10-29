@@ -25,7 +25,7 @@ class Client:
         self.ssh, self.progress = connection.argv, progress
 
     def call(self, operation, request=None, *, timeout=120):
-        if operation != 'status':
+        if operation not in ('status', 'start'):
             raise ValueError('Unsupported phase operation')
         try:
             self.connection.check()

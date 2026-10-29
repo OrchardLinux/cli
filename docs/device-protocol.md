@@ -1,6 +1,6 @@
 # Device protocol v1
 
-The recovery exposes `orchard-device` with two operations. Installing does not
+The recovery exposes `orchard-device` with three operations. Installing does not
 go through it: the CLI copies its own install script
 (`src/orchard_cli/install_device.py`) to the recovery and runs it over SSH, so
 the host and device side of an install always come from the same CLI version.
@@ -23,6 +23,7 @@ the host and device side of an install always come from the same CLI version.
 |---|---|---|
 | `bootstrap` | public key, profile, ECID, boot ID (over USB serial) | Authorizes the key in RAM, starts the SSH daemon, returns the pinned host key and endpoint. |
 | `status` | none | Release, profile, ECID and boot ID. |
+| `start` | root and boot partition PARTUUIDs | Right after an install: PID 1 switches into that root if its boot entry boots the running kernel, so the first start needs no second DFU boot. A failed check leaves the recovery running, with the reason in `/run/orchard/start.log`. |
 
 Stdout is newline-delimited JSON with `protocol: 1`: one `result`, or an
 `error` with `retry: false`.

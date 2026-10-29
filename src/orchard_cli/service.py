@@ -152,7 +152,15 @@ def install(manifest=None, *, input_fn=input, secrets_fn=ask_secrets, progress=N
                   'resumed': bool(device['resumed']), 'root': finished[0]['root'],
                   'boot': finished[0]['boot'], 'timing': clock.result()}
         path = private / 'last-install.json'
-    save_report(path, report)
-    progress.phase(record.get('name', 'Linux') + ' is installed. Put the device in DFU mode, '
-                   'then start it with: orchard launch')
+        save_report(path, report)
+        # The recovery runs the same kernel the new entry boots, so it can switch
+        # into the new root right away: the first start needs no second DFU boot.
+        name = record.get('name', 'Linux')
+        if ask(clock, f'Start {name} now? [Y/n] ', input_fn).lower() in ('', 'y', 'yes'):
+            Client(connection, progress).call('start', {'root': report['root'], 'boot': report['boot']})
+            save_report(path, {**report, 'started': True})
+            progress.phase(f'{name} is starting on the device. To start it again later, '
+                           'put the device in DFU mode and run: orchard launch')
+            return {**report, 'started': True}
+    progress.phase(f'{name} is installed. Put the device in DFU mode, then start it with: orchard launch')
     return report
