@@ -113,6 +113,8 @@ def check_account(disk, root):
         tally = (target / 'var/lib/orchard/pin-tally').stat()
         assert (tally.st_mode & 0o777, tally.st_uid) == (0o700, 1000)
         assert 'pin-check' in (target / 'etc/pam.d/omarchy-lock-password').read_text()
+        assert (target / 'etc/pam.d/greetd').read_text() == (target / 'etc/pam.d/omarchy-lock-password').read_text()
+        assert (target / 'var/lib/orchard/pin-tally/tablet').stat().st_uid == 1000
         firmware = target / 'usr/lib/firmware/apple/test.bin'
         assert firmware.read_bytes() == FIRMWARE_BYTES and firmware.stat().st_mode & 0o777 == 0o644
         assert not (target / 'mixin.json').exists()

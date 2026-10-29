@@ -19,12 +19,13 @@ uploads /run/orchard/secrets.json (root-only, {"password", "pin"}) for the
 run, and the script deletes it as soon as it has read it. The password
 goes to the account through the system's own chpasswd. The 6-digit
 lock-screen PIN is kept apart from it, as a SHA-512 crypt hash in
-/etc/orchard/pin (`user:hash`). The lock screen runs PAM as the user, so
-the hash is readable by the user's group, and the PIN's PAM service
-(`omarchy-lock-password`, which the desktop's lock uses) keeps its
-pam_faillock tally in a directory the user owns: 5 wrong PINs lock it for
-5 minutes. The PIN never unlocks sudo or SSH. Neither secret is ever
-written to the events or the log.
+/etc/orchard/pin (`user:hash`). The PIN signs in at boot (greetd's PAM
+service, `greetd`) and unlocks the screen (`omarchy-lock-password`, which
+the desktop's lock uses). The lock runs PAM as the user, so the hash is
+readable by the user's group and the pam_faillock tally lives in a
+directory the user owns: 5 wrong PINs lock it for 5 minutes. The PIN never
+unlocks sudo or SSH. Neither secret is ever written to the events or the
+log.
 """
 import gzip
 import hashlib
@@ -69,9 +70,10 @@ exit 1
 '''
 
 PIN_PAM = '''#%PAM-1.0
-# Orchard lock-screen PIN: 6 digits, 5 tries, then locked for 5 minutes.
-# It unlocks the session only; sudo and SSH never accept it. The lock runs
-# this as the user, so the tally lives in a directory the user owns.
+# Orchard PIN: 6 digits, 5 tries, then locked for 5 minutes. It signs in at
+# boot and unlocks the screen only; sudo and SSH never accept it. The lock
+# runs this as the user, so the tally lives in a directory the user owns.
+auth     requisite                pam_nologin.so
 auth     required                 pam_faillock.so preauth dir=/var/lib/orchard/pin-tally deny=5 unlock_time=300
 auth     [success=1 default=bad]  pam_exec.so quiet expose_authtok /usr/lib/orchard/pin-check
 auth     [default=die]            pam_faillock.so authfail dir=/var/lib/orchard/pin-tally deny=5 unlock_time=300
@@ -570,8 +572,13 @@ def set_account(root, password, pin):
     tally.mkdir(parents=True, exist_ok=True)
     os.chown(tally, uid, gid)
     tally.chmod(0o700)
+    # greetd checks the PIN as root: an existing user-owned tally keeps the
+    # lock screen, which runs as the user, able to read and reset it.
+    write_file(tally / user, '', 0o600, group=gid)
+    os.chown(tally / user, uid, gid)
     write_file(root / 'usr/lib/orchard/pin-check', PIN_CHECK, 0o755)
-    write_file(root / 'etc/pam.d/omarchy-lock-password', PIN_PAM, 0o644)
+    for service in ('greetd', 'omarchy-lock-password'):
+        write_file(root / 'etc/pam.d' / service, PIN_PAM, 0o644)
     return user
 
 
