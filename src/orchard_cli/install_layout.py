@@ -86,7 +86,8 @@ def options(layout) -> List[Option]:
     return sorted(result, key=lambda o: o.start)
 
 
-def plan(layout, option: Option, image: Dict, entry: Dict, firmware: Optional[Dict] = None) -> Dict:
+def plan(layout, option: Option, image: Dict, entry: Dict, firmware: Optional[Dict] = None,
+         account: bool = False) -> Dict:
     """The plan `install_device.py run` executes for one chosen option."""
     block = layout['disk']['sector']
     align = MIB // block
@@ -124,4 +125,5 @@ def plan(layout, option: Option, image: Dict, entry: Dict, firmware: Optional[Di
         'image': image,
         'entry': entry,
         'firmware': firmware,
+        'account': account,     # secrets travel separately, never in the plan
     }

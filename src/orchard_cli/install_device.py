@@ -13,6 +13,18 @@ and writes the boot entry last. It never touches APFS or any partition the
 plan does not name. Every step reports one JSON line on stdout and in
 /run/orchard/install.log; a run interrupted after its partition-table
 write is rerun from a fresh inspect, which then sees the new partitions.
+
+A plan with `account` also sets the system's one user account: the CLI
+uploads /run/orchard/secrets.json (root-only, {"password", "pin"}) for the
+run, and the script deletes it as soon as it has read it. The password
+goes to the account through the system's own chpasswd. The 6-digit
+lock-screen PIN is kept apart from it, as a SHA-512 crypt hash in
+/etc/orchard/pin (`user:hash`). The lock screen runs PAM as the user, so
+the hash is readable by the user's group, and the PIN's PAM service
+(`omarchy-lock-password`, which the desktop's lock uses) keeps its
+pam_faillock tally in a directory the user owns: 5 wrong PINs lock it for
+5 minutes. The PIN never unlocks sudo or SSH. Neither secret is ever
+written to the events or the log.
 """
 import gzip
 import hashlib
@@ -32,6 +44,36 @@ TARGET = Path('/run/orchard/target')
 XBOOTLDR = 'bc13c2ff-59e6-4262-a352-b275fd6f7172'
 ROOT_ARM64 = 'b921b045-1df0-41c3-af44-4c6f280d3fae'
 DEFAULT_DISK = '/dev/nvme0n1'
+SECRETS = Path('/run/orchard/secrets.json')
+
+PIN_CHECK = r'''#!/bin/sh
+# Lock-screen PIN check for the orchard-pin PAM service (pam_exec expose_authtok).
+# The PIN arrives on stdin, NUL-terminated; /etc/orchard/pin holds user:sha512-crypt.
+PATH=/usr/bin:/bin
+pin=$(tr -d '\000')
+case $pin in [0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) exit 1 ;; esac
+while IFS=: read -r user hash; do
+    [ "$user" = "$PAM_USER" ] || continue
+    salt=${hash#\$6\$}
+    salt=${salt%%\$*}
+    [ "$(printf '%s' "$pin" | openssl passwd -6 -salt "$salt" -stdin)" = "$hash" ]
+    exit
+done < /etc/orchard/pin
+exit 1
+'''
+
+PIN_PAM = '''#%PAM-1.0
+# Orchard lock-screen PIN: 6 digits, 5 tries, then locked for 5 minutes.
+# It unlocks the session only; sudo and SSH never accept it. The lock runs
+# this as the user, so the tally lives in a directory the user owns.
+auth     required                 pam_faillock.so preauth dir=/var/lib/orchard/pin-tally deny=5 unlock_time=300
+auth     [success=1 default=bad]  pam_exec.so quiet expose_authtok /usr/lib/orchard/pin-check
+auth     [default=die]            pam_faillock.so authfail dir=/var/lib/orchard/pin-tally deny=5 unlock_time=300
+auth     sufficient               pam_faillock.so authsucc dir=/var/lib/orchard/pin-tally deny=5 unlock_time=300
+auth     required                 pam_deny.so
+account  include                  system-local-login
+session  include                  system-local-login
+'''
 
 
 class InstallError(RuntimeError):
@@ -417,10 +459,71 @@ def check_entry(boot_root, partuuid):
     raise InstallError('entry-missing', 'The system did not write a boot entry for its root')
 
 
+# --- account -----------------------------------------------------------------
+
+def read_secrets(path):
+    """The password and PIN the CLI uploaded for this run; the file is deleted at once."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise InstallError('no-secrets', f'{path} is missing; the CLI uploads it for each run') from None
+    try:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            raise InstallError('secrets-unsafe', f'{path} must be a regular file readable by root only')
+        secrets = json.loads(path.read_text())
+    finally:
+        path.unlink()
+    password, pin = secrets.get('password'), secrets.get('pin')
+    if not isinstance(password, str) or not password or '\n' in password or '\0' in password:
+        raise InstallError('bad-password', 'The password is empty or contains a line break')
+    if not isinstance(pin, str) or len(pin) != 6 or not (pin.isascii() and pin.isdigit()):
+        raise InstallError('bad-pin', 'The PIN must be exactly 6 digits')
+    return password, pin
+
+
+def account_user(root):
+    """The system's one regular user (UID 1000-59999): name, uid, gid."""
+    users = []
+    for line in (root / 'etc/passwd').read_text().splitlines():
+        fields = line.split(':')
+        if len(fields) == 7 and fields[2].isdigit() and fields[3].isdigit() and 1000 <= int(fields[2]) < 60000:
+            users.append((fields[0], int(fields[2]), int(fields[3])))
+    if len(users) != 1:
+        raise InstallError('account-user', f'The system image needs exactly one regular user, '
+                                           f'found {[u[0] for u in users]}')
+    return users[0]
+
+
+def write_file(path, text, mode, group=0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, 'w') as out:
+        os.fchown(out.fileno(), 0, group)
+        os.fchmod(out.fileno(), mode)
+        out.write(text)
+
+
+def set_account(root, password, pin):
+    user, uid, gid = account_user(root)
+    run('chroot', str(root), 'chpasswd', input=f'{user}:{password}\n'.encode())
+    digest = run('chroot', str(root), 'openssl', 'passwd', '-6', '-stdin', input=pin.encode()).decode().strip()
+    if not digest.startswith('$6$') or ':' in digest or '\n' in digest:
+        raise InstallError('pin-hash', 'openssl in the system image did not return a SHA-512 crypt hash')
+    write_file(root / 'etc/orchard/pin', f'{user}:{digest}\n', 0o640, group=gid)
+    tally = root / 'var/lib/orchard/pin-tally'
+    tally.mkdir(parents=True, exist_ok=True)
+    os.chown(tally, uid, gid)
+    tally.chmod(0o700)
+    write_file(root / 'usr/lib/orchard/pin-check', PIN_CHECK, 0o755)
+    write_file(root / 'etc/pam.d/omarchy-lock-password', PIN_PAM, 0o644)
+    return user
+
+
 def install(plan, stream):
     disk = plan['disk']['path']
     if os.geteuid() != 0:
         raise InstallError('not-root', 'The installer must run as root')
+    secrets = read_secrets(SECRETS) if plan.get('account') else None
     info, partitions, free = read_gpt(disk)
     check_plan(plan, info, partitions, free)
     check_quiet(disk, partitions)
@@ -477,6 +580,9 @@ def install(plan, stream):
             point.mkdir(exist_ok=True)
             run('mount', '-t', fs, name, str(point))
             mounts.append(point)
+        if secrets:
+            emit('step', step='account', state='done', user=set_account(TARGET, *secrets))
+            secrets = None
         kernel = f'/usr/lib/modules/{entry["version"]}/vmlinuz'
         if not (TARGET / kernel.lstrip('/')).is_file():
             raise InstallError('no-kernel', f'The system image has no kernel at {kernel}')

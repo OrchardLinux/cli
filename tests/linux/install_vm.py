@@ -3,7 +3,8 @@
 
 Not part of the unit tests (needs root and loop devices). From macOS:
     podman machine ssh "sudo python3 $PWD/tests/linux/install_vm.py $PWD STATIC_ARM64_BUSYBOX"
-Covers a free range, replacing a root, a stale plan and the old one-partition layout.
+Covers a free range, replacing a root, a stale plan and the old one-partition layout,
+and the account step: password, lock-screen PIN file, PAM service and PIN check.
 """
 import hashlib
 import io
@@ -58,20 +59,67 @@ printf 'title Test\\nversion %s\\nsort-key test\\nlinux /%s/%s/linux\\ninitrd /%
              'usr/bin/kernel-install': (kernel_install.encode(), 0o755),
              f'usr/lib/modules/{VERSION}/vmlinuz': (b'ARM64 kernel image' * 100, 0o644),
              f'usr/lib/modules/{VERSION}/dtb/t8010-j71b.dtb': (b'\xd0\x0d\xfe\xed' + bytes(60), 0o644),
-             'etc/os-release': (b'ID=test\n', 0o644)}
+             'etc/os-release': (b'ID=test\n', 0o644),
+             'etc/passwd': (b'root:x:0:0::/root:/bin/sh\ntablet:x:1000:1000::/home/tablet:/bin/sh\n', 0o644),
+             'etc/group': (b'root:x:0:\ntablet:x:1000:\n', 0o644),
+             'etc/shadow': (b'root:!:1::::::\ntablet:!:1::::::\n', 0o600),
+             # Busybox has no chpasswd; this stands in for shadow's, hashing like it does.
+             'usr/bin/chpasswd': (b'#!/bin/sh\nIFS=: read -r user password\n'
+                                  b'printf "root:!:1::::::\\n%s:%s:1::::::\\n" "$user" '
+                                  b'"$(printf %s "$password" | openssl passwd -6 -stdin)" > /etc/shadow\n', 0o755),
+             **host_openssl()}
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode='w:gz') as tar:
         for name, (data, mode) in files.items():
             info = tarfile.TarInfo(name)
             info.size, info.mode = len(data), mode
             tar.addfile(info, io.BytesIO(data))
-        for applet in ('sh', 'mkdir', 'cp', 'cat', 'printf', 'echo'):
+        for applet in ('sh', 'mkdir', 'cp', 'cat', 'printf', 'echo', 'tr'):
             info = tarfile.TarInfo('bin/' + applet)
             info.type, info.linkname = tarfile.SYMTYPE, 'busybox'
             tar.addfile(info)
     data = buffer.getvalue()
     return data, {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
                   'expanded_bytes': 4 << 20, 'compression': 'gzip'}
+
+
+def host_openssl():
+    """The VM's openssl and its libraries, at the same paths, for the account step."""
+    paths = ['/usr/bin/openssl'] + [word for line in sh('ldd', '/usr/bin/openssl').decode().splitlines()
+                                    for word in line.split() if word.startswith('/')]
+    return {path.lstrip('/'): (Path(path).read_bytes(), 0o755) for path in paths}
+
+
+def check_account(disk, root):
+    """The installed account: hashed password, PIN file and the PIN check itself."""
+    target = Path('/run/orchard/check')
+    target.mkdir(parents=True, exist_ok=True)
+    sh('mount', '-o', 'ro', root, str(target))
+    try:
+        shadow = (target / 'etc/shadow').read_text()
+        assert 'tablet:$6$' in shadow and 'secret password' not in shadow, shadow
+        pin = target / 'etc/orchard/pin'
+        assert pin.read_text().startswith('tablet:$6$') and '424242' not in pin.read_text()
+        assert (pin.stat().st_mode & 0o777, pin.stat().st_uid, pin.stat().st_gid) == (0o640, 0, 1000)
+        tally = (target / 'var/lib/orchard/pin-tally').stat()
+        assert (tally.st_mode & 0o777, tally.st_uid) == (0o700, 1000)
+        assert 'pin-check' in (target / 'etc/pam.d/omarchy-lock-password').read_text()
+
+        def pin_ok(value):
+            return subprocess.run(['chroot', str(target), '/usr/lib/orchard/pin-check'], input=value + b'\0',
+                                  env={'PAM_USER': 'tablet'}, capture_output=True).returncode == 0
+        assert pin_ok(b'424242') and not pin_ok(b'424243') and not pin_ok(b'42424')
+    finally:
+        sh('umount', str(target))
+
+
+def write_secrets():
+    path = Path('/run/orchard/secrets.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as out:
+        json.dump({'password': 'secret password', 'pin': '424242'}, out)
+    return path
 
 
 def apfs_digest(disk):
@@ -81,11 +129,19 @@ def apfs_digest(disk):
 def install(disk, choose, image, data, label):
     (layout,) = [e for e in device(disk, 'inspect') if e['event'] == 'layout']
     option = choose(L.options(layout))
-    plan = L.plan(layout, option, image, {'id': 'test', 'version': VERSION, 'options': 'quiet'})
+    plan = L.plan(layout, option, image, {'id': 'test', 'version': VERSION, 'options': 'quiet'}, account=True)
     with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
         json.dump(plan, f)
+    secrets = write_secrets()
     found = device(disk, 'run', f.name, stdin=data)
+    assert not secrets.exists(), 'secrets file left behind'
+    assert not any(word in json.dumps(found) + Path('/run/orchard/install.log').read_text()
+                   for word in ('secret password', '424242')), 'a secret reached the events or log'
     print(label, [e.get('step') or e['event'] for e in found if e['event'] in ('step', 'finished')])
+    (finished,) = [e for e in found if e['event'] == 'finished']
+    numbers = {p['partuuid']: p['number'] for p in
+               [e for e in device(disk, 'inspect') if e['event'] == 'layout'][0]['partitions']}
+    check_account(disk, f'{disk}p{numbers[finished["root"]]}')
     return plan
 
 
@@ -121,6 +177,7 @@ def main():
             # A plan from an older inspect must be refused before any write.
             with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
                 json.dump(first, f)
+            write_secrets()
             result = subprocess.run([sys.executable, str(DEVICE), 'run', f.name], input=data, capture_output=True,
                                     env={**os.environ, 'ORCHARD_INSTALL_DISK': disk})
             refused = events(result.stdout)[-1]
