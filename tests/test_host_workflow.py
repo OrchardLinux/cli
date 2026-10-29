@@ -14,8 +14,8 @@ from orchard_cli.contracts import Connection
 from orchard_cli.state import BootState, DeviceState
 from orchard_cli.progress import Clock, Progress
 from orchard_cli.protocol import Client, DeviceError
-from orchard_cli.service import install, select_destination, wait_ready
-from orchard_cli.apple.ipsw import hcd_from_binary
+from orchard_cli.service import install
+from orchard_cli.apple.bluetool import hcd_from_binary
 
 
 BOOT = '11111111-1111-4111-8111-111111111111'
@@ -61,154 +61,6 @@ class HostWorkflow(unittest.TestCase):
         self.assertIn('not been tested yet, proceed at your own risk', text)
         assets.assert_not_called()
 
-    def test_guided_run_reaches_desktop_with_one_mixin_and_one_root_stream(self):
-        for filesystem in ('ext4', 'unformatted'):
-            with self.subTest(filesystem=filesystem):
-                self.guided_run(filesystem)
-
-    def guided_run(self, filesystem):
-        from contextlib import contextmanager
-        from unittest.mock import Mock
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            private = root / 'private/devices/device/0000000000000001/boots' / BOOT.replace('-', '')
-            image, mixin = root / 'root', root / 'mixin'
-            image.write_bytes(b'root-stream')
-            mixin.write_bytes(b'private-data')
-            adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', CAVEATS=[], FEATURES={})
-            adapter.capture_adt.return_value = b'fresh-adt'
-            adapter.prepare_mixin.return_value = (mixin, {'bytes': 12, 'sha256': 'mixin-digest'})
-            import threading
-            downloads_started = threading.Barrier(2)
-            downloads_done = set()
-            def acquire_firmware(*args):
-                downloads_started.wait(timeout=2)
-                downloads_done.add('firmware')
-                return root
-            adapter.firmware_inputs.side_effect = acquire_firmware
-            def boot(*args):
-                self.assertEqual(downloads_done, {'firmware', 'assets'})
-            adapter.boot.side_effect = boot
-            @contextmanager
-            def connection(device):
-                yield Connection(['authenticated-transport'], SCOPE, lambda: None)
-            adapter.connect = connection
-            class Device:
-                prepared = installed = handed_off = formatted = False
-                def call(self, operation, request=None, **kwargs):
-                    if operation == 'status':
-                        return {'release': '1.0', 'boot_id': BOOT, 'ecid':1, 'profile':'device', 'ready': self.handed_off}
-                    if operation == 'prepare':
-                        assert not self.prepared and kwargs['source'].read() == b'private-data'
-                        self.prepared = True
-                        return {'status': 'complete'}
-                    if operation == 'targets':
-                        return {'selection_token': 'new-token' if self.formatted else 'token',
-                                'boot_id': BOOT, 'needed_bytes': 512 * 1024**2, 'partitions': [
-                            {'id': 'target', 'bytes': 16 * 1024**3, 'label': 'Linux',
-                             'filesystem': 'ext4' if self.formatted else filesystem,
-                             'filesystem_uuid': '11111111-1111-4111-8111-111111111111'}]}
-                    if operation == 'format-target':
-                        assert self.prepared and not self.formatted and filesystem == 'unformatted'
-                        saved = json.loads((private / 'last-format.json').read_text())
-                        assert saved['status'] == 'unknown' and saved['operation_id'] == request['operation_id']
-                        assert request['confirmation'] == 'format target' and request['selection_token'] == 'token'
-                        self.formatted = True
-                        return {**{k: request[k] for k in ('boot_id', 'operation_id', 'target')},
-                                'status': 'complete', 'filesystem': 'ext4',
-                                'filesystem_uuid': '11111111-1111-4111-8111-111111111111'}
-                    if operation == 'destination':
-                        assert request['selection_token'] == ('new-token' if self.formatted else 'token')
-                        return {'exists': False, 'identity': None, 'free_bytes': 10 * 1024**3,
-                                'reclaimable_bytes': 0, 'needed_bytes': 2 * 1024**3, 'inodes_sufficient': True}
-                    if operation == 'install':
-                        assert self.prepared and not self.installed and kwargs['source'].read() == b'root-stream'
-                        self.installed = True
-                        return {'status': 'complete'}
-                    if operation == 'handoff':
-                        assert self.installed and not self.handed_off
-                        self.handed_off = True
-                        return {'requested': True}
-                    raise AssertionError(operation)
-            device = Device()
-            answers = iter(('y', '', *(['format target'] if filesystem == 'unformatted' else []),
-                            'install linux', 'y'))
-            record = {'release': '1.0', 'assets': {'root': {'bytes': 11, 'sha256': 'root-digest'}}}
-            def acquire_assets(*args, **kwargs):
-                downloads_started.wait(timeout=2)
-                downloads_done.add('assets')
-                return record, {'root': image}
-            def check_committed_before_readiness(client, progress):
-                saved = json.loads((private / 'last-install.json').read_text())
-                self.assertTrue(saved['installed'])
-                self.assertIsNone(saved['ready'])
-                self.assertIsNone(saved['timing']['install_seconds'])
-                return wait_ready(client, progress)
-            with patch('orchard_cli.service.choose', return_value=(adapter, {'mode':'dfu', 'location':'opaque', 'ecid':1, 'resumed':False})), \
-                 patch('orchard_cli.service.record_launcher') as recorded, \
-                 patch('orchard_cli.service.resolve', side_effect=acquire_assets), \
-                 patch('orchard_cli.service.Client', return_value=device), \
-                 patch('orchard_cli.state.cache_root', return_value=root), \
-                 patch('orchard_cli.service.wait_ready', side_effect=check_committed_before_readiness):
-                result = install(input_fn=lambda _: next(answers), progress=Progress(io.StringIO()))
-            self.assertTrue(result['ready'])
-            self.assertTrue(device.handed_off)
-            self.assertEqual(device.formatted, filesystem == 'unformatted')
-            if device.formatted:
-                self.assertEqual(json.loads((private / 'last-format.json').read_text())['status'], 'complete')
-            receipt = private / 'last-install.json'
-            self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
-            self.assertIn('install_seconds', json.loads(receipt.read_text())['timing'])
-
-    def test_target_ui_offers_keep_and_another_directory(self):
-        class Device:
-            def __init__(self):
-                self.calls = []
-            def call(self, operation, request=None):
-                self.calls.append((operation, request))
-                if operation == 'targets':
-                    return {'selection_token': 'token', 'partitions': [
-                        {'id': 'partition', 'bytes': 1024**3, 'label': 'Linux', 'filesystem': 'ext4'}]}
-                return {'exists': request['directory'] == 'linux', 'identity': None,
-                        'free_bytes': 10 * 1024**3, 'reclaimable_bytes': 1024**3,
-                        'needed_bytes': 2 * 1024**3, 'inodes_sufficient': True}
-        answers = iter(('', '2', 'chosen', 'install chosen'))
-        device = Device()
-        result = select_destination(device, Clock(), input_fn=lambda _: next(answers), output=lambda _: None)
-        self.assertEqual(result['directory'], 'chosen')
-        self.assertFalse(result['replace'])
-        self.assertEqual([c[0] for c in device.calls], ['targets', 'destination', 'destination'])
-
-    def test_replacement_plan_and_capacity_gate(self):
-        class Device:
-            free = 4 * 1024**3
-            reclaimable = 12 * 1024**3
-            inodes = True
-            def call(self, operation, request=None):
-                if operation == 'targets':
-                    return {'selection_token': 'token', 'partitions': [
-                        {'id': 'partition', 'bytes': 60 * 1024**3, 'label': 'Linux', 'filesystem': 'ext4', 'free_bytes': self.free}]}
-                return {'exists': True, 'identity': [1, 2, 3, 4], 'free_bytes': self.free,
-                        'reclaimable_bytes': self.reclaimable, 'needed_bytes': 14 * 1024**3,
-                        'inodes_sufficient': self.inodes}
-        client = Device()
-        output = []
-        answers = iter(('', '1', 'replace linux'))
-        result = select_destination(client, Clock(), input_fn=lambda _: next(answers), output=output.append)
-        self.assertTrue(result['replace'])
-        self.assertEqual(result['destination_identity'], [1, 2, 3, 4])
-        self.assertIn('No backup will be created.', '\n'.join(output))
-        self.assertIn('16.0 GiB', '\n'.join(output))
-        for insufficient_inodes in (False, True):
-            client.reclaimable = 12 * 1024**3 if insufficient_inodes else 0
-            client.inodes = not insufficient_inodes
-            answers = iter(('', '1'))  # Must stop before asking for destructive confirmation.
-            with self.assertRaisesRegex(ValueError, 'nothing was deleted'):
-                select_destination(client, Clock(), input_fn=lambda _: next(answers), output=lambda _: None)
-        answers = iter(('', '3'))
-        with self.assertRaisesRegex(ValueError, 'cancelled'):
-            select_destination(client, Clock(), input_fn=lambda _: next(answers), output=lambda _: None)
-
     def test_clock_excludes_input_and_download_once(self):
         with patch('orchard_cli.progress.time.monotonic', side_effect=[0, 1, 4, 5, 7, 12]):
             clock = Clock()
@@ -250,32 +102,6 @@ class HostWorkflow(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'authentication rejected'):
                 wait_authenticated(['ssh', 'root@device'], Mock())
         self.assertEqual(run.call_count, 1)
-
-    def test_failed_session_is_cleaned_before_asset_or_mixin_work(self):
-        from contextlib import contextmanager
-        from unittest.mock import Mock
-        with tempfile.TemporaryDirectory() as directory:
-            adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported', CAVEATS=[], FEATURES={})
-            adapter.REBOOT_MESSAGE = 'A fresh recovery boot is required. Run: orchard install'
-            @contextmanager
-            def connection(device):
-                yield Connection(['authenticated-transport'], SCOPE, lambda: None)
-            adapter.connect = connection
-            client = Mock()
-            client.call.side_effect = [
-                {'release': '1.0', 'installation_attempted': True, 'capabilities': ['abort']},
-                {'message': 'Incomplete staging removed. ' + adapter.REBOOT_MESSAGE}]
-            with patch('orchard_cli.service.choose', return_value=(adapter, {'resumed': True})), \
-                 patch('orchard_cli.service.Client', return_value=client), \
-                 patch('orchard_cli.state.cache_root', return_value=Path(directory)), \
-                 patch('orchard_cli.service.resolve', side_effect=AssertionError('must inspect before assets')):
-                with self.assertRaisesRegex(RuntimeError, 'orchard install') as error:
-                    install(input_fn=lambda _: 'y', progress=Progress(io.StringIO()))
-            self.assertNotIn('do not retry', str(error.exception))
-            adapter.firmware_inputs.assert_not_called()
-            adapter.prepare_mixin.assert_not_called()
-            adapter.boot.assert_not_called()
-            self.assertEqual(client.call.call_args.args[0], 'abort')
 
     def test_terminal_progress_updates_in_place_and_logs_are_sparse(self):
         class Terminal(io.StringIO):
@@ -343,27 +169,15 @@ class HostWorkflow(unittest.TestCase):
             adapter.boot(device, {}, {}, Mock())
             upload.assert_not_called()
 
-    def test_protocol_stream_reports_device_failure_without_retransmission(self):
-        with tempfile.TemporaryDirectory() as directory:
-            marker = Path(directory) / 'attempts'
-            program = ('import sys,json,pathlib; p=pathlib.Path(' + repr(str(marker)) + '); '
-                       'p.write_text(p.read_text()+"x" if p.exists() else "x"); '
-                       'sys.stdin.buffer.read(); '
-                       'print(json.dumps({"protocol":1,"event":"error","message":"integrity mismatch"})); '
-                       'sys.exit(1)')
-            client = Client(Connection([sys.executable, '-c', program], SCOPE, lambda: None), Progress(io.StringIO()))
-            with self.assertRaisesRegex(DeviceError, 'integrity mismatch'):
-                client.call('install', source=io.BytesIO(b'archive'), size=7, timeout=5)
-            self.assertEqual(marker.read_text(), 'x')
-
-    def test_reported_handoff_failure_stops_without_a_readiness_wait(self):
-        from unittest.mock import Mock
-        client = Mock()
-        client.call.return_value = {'ready': False, 'failure': {'error': 'handoff stopped'}}
-        with patch('orchard_cli.service.time.sleep') as sleep:
-            with self.assertRaisesRegex(RuntimeError, 'handoff stopped'):
-                wait_ready(client, Progress(io.StringIO()))
-            sleep.assert_not_called()
+    def test_protocol_reports_device_errors_and_allows_only_status(self):
+        program = ('import json,sys; '
+                   'print(json.dumps({"protocol":1,"event":"error","message":"identity unavailable"})); '
+                   'sys.exit(1)')
+        client = Client(Connection([sys.executable, '-c', program], SCOPE, lambda: None), Progress(io.StringIO()))
+        with self.assertRaisesRegex(DeviceError, 'identity unavailable'):
+            client.call('status', timeout=5)
+        with self.assertRaisesRegex(ValueError, 'Unsupported'):
+            client.call('install')
 
     def test_protocol_rejects_incompatible_responses(self):
         program = 'print(\'{"protocol":2,"event":"result","result":{}}\')'

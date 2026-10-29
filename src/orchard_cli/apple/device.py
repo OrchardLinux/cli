@@ -5,6 +5,7 @@ recipe, not CLI code.
 """
 from contextlib import AbstractContextManager
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 from orchard_cli.contracts import BootAssets, BootRequest, Connection, SelectedDevice
@@ -27,6 +28,8 @@ class Device:
         self.PRODUCT = descriptor['match'].get('linux', {}).get('product')
         self.CHIP = descriptor['match']['dfu']['chip']
         self.BOARD = descriptor['match']['dfu']['board']
+        dtb = descriptor.get('kernel', {}).get('dtb')
+        self.DEVICETREE = dtb + '.dtb' if dtb else None
         support = descriptor.get('support', {})
         self.INSTALL = bool(support.get('install', False))
         self.STATUS = support.get('status', 'experimental')
@@ -48,17 +51,6 @@ class Device:
     def connect(self, device: SelectedDevice) -> AbstractContextManager[Connection]:
         return ssh.session(DeviceState(self.PROFILE, device['ecid']), self.recovery_endpoint,
                            expected_boot=device.get('boot_id'))
-
-    def connect_saved(self, device: SelectedDevice) -> AbstractContextManager[Connection]:
-        if device['mode'] != 'linux' or not device.get('boot_id'):
-            raise ValueError('Diagnostic access requires the selected running Linux boot')
-        return ssh.saved_session(DeviceState(self.PROFILE, device['ecid']), self.recovery_endpoint,
-                                 expected_boot=device['boot_id'])
-
-    def forget_access(self, scope: BootState) -> None:
-        if scope.device.profile != self.PROFILE:
-            raise ValueError('Credential scope differs from adapter profile')
-        return ssh.forget_access(scope)
 
     def capture_adt(self, device: Optional[SelectedDevice] = None) -> bytes:
         # Bring-up and diagnostics only; installs do not need the ADT.
@@ -88,3 +80,7 @@ class Device:
              manifest: BootRequest, progress: Progress) -> None:
         return apple_boot.boot(device, assets, manifest, progress,
                                profile=self.PROFILE, chip=self.CHIP, board=self.BOARD, product=self.PRODUCT)
+
+    def start_loader(self, device: SelectedDevice, loader: Dict[str, Path], progress: Progress) -> str:
+        return apple_boot.start_loader(device, loader, progress, profile=self.PROFILE,
+                                       chip=self.CHIP, board=self.BOARD, product=self.PRODUCT)

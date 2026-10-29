@@ -12,7 +12,6 @@ import unittest
 from unittest.mock import patch
 
 from orchard_cli import downloads, releases
-from orchard_cli.apple import ipsw
 from orchard_cli.progress import Clock, Progress
 
 
@@ -90,15 +89,6 @@ class DownloadUI(unittest.TestCase):
                 target = releases.materialize(receipt, None)
             self.assertEqual(target.read_bytes(), data)
             self.assertFalse(partial.exists())
-
-    def test_extractor_output_is_logged_and_failure_is_visible(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(ipsw, 'cache_root', return_value=Path(directory)):
-            ipsw.run_tool([sys.executable, '-c', 'print("mount details")'])
-            logs = list((Path(directory) / 'private/diagnostics').glob('*.log'))
-            self.assertEqual(logs[0].read_text().strip(), 'mount details')
-            self.assertEqual(logs[0].stat().st_mode & 0o777, 0o600)
-            with self.assertRaisesRegex(RuntimeError, 'Diagnostic log:'):
-                ipsw.run_tool([sys.executable, '-c', 'raise SystemExit(3)'])
 
     def test_overlapping_download_exclusions_count_wall_time_once(self):
         with patch('orchard_cli.progress.time.monotonic', side_effect=[0, 1, 2, 5, 6]):

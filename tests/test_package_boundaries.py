@@ -12,9 +12,8 @@ from unittest.mock import Mock, patch
 
 from orchard_cli import firmware
 from orchard_cli.apple import usb, ipsw
-from orchard_cli.transports import ssh
 from orchard_cli.progress import Clock
-from orchard_cli.state import BootState, DeviceState
+from orchard_cli.state import DeviceState
 
 FIXTURE = Path(__file__).parent / 'fixtures/first/index.toml'
 
@@ -48,44 +47,10 @@ sys.argv=['orchard','resolve',MANIFEST,'--profile','j71b'];main()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('example-1', result.stdout)
 
-    def test_ssh_cache_and_cleanup_are_device_and_boot_scoped(self):
-        boot = '11111111-1111-4111-8111-111111111111'
-        scopes = [BootState(DeviceState('j71b', ecid), boot) for ecid in (1, 2)]
-        with tempfile.TemporaryDirectory() as store, patch('orchard_cli.state.cache_root', return_value=Path(store)):
-            for scope in scopes:
-                directory = scope.root / 'access'
-                directory.mkdir(parents=True)
-                for name in ('identity', 'known_hosts'):
-                    (directory/name).write_text(str(scope.device.ecid))
-                    (directory/name).chmod(0o600)
-                metadata = directory / 'endpoint.json'
-                metadata.write_text(json.dumps({'profile':'j71b','ecid':scope.device.ecid,
-                                                'boot_id':boot,'host':'172.16.42.1','port':2222}))
-                metadata.chmod(0o600)
-            selected = Mock(return_value={'location':'new-port','serial_port':'serial','ecid':2,'boot_id':boot})
-            with patch.object(ssh, 'verify_peer') as verified:
-                with ssh.saved_session(scopes[1].device, selected, expected_boot=boot) as connection:
-                    self.assertIn(str(scopes[1].root/'access/identity'), connection.argv)
-                    self.assertEqual(connection.argv[connection.argv.index('-p')+1], '2222')
-                verified.assert_called_once()
-                ssh.forget_access(scopes[1])
-            self.assertTrue((scopes[0].root/'access/identity').exists())
-            self.assertFalse((scopes[1].root/'access').exists())
-
     def test_state_rejects_non_profile_paths(self):
         for profile in ('../other', '/tmp/other', '', 'a/b'):
             with self.assertRaisesRegex(ValueError, 'Invalid device profile'):
                 DeviceState(profile, 1)
-
-    def test_ssh_different_device_or_boot_is_rejected_before_authentication(self):
-        boot = '11111111-1111-4111-8111-111111111111'
-        for endpoint in ({'ecid':2,'boot_id':boot},
-                         {'ecid':1,'boot_id':'22222222-2222-4222-8222-222222222222'}):
-            with patch.object(ssh, 'verify_peer') as verified:
-                with self.assertRaisesRegex(ValueError, 'identity differs'):
-                    with ssh.saved_session(DeviceState('j71b',1), lambda:endpoint, expected_boot=boot):
-                        self.fail('Wrong identity accepted')
-                verified.assert_not_called()
 
     def test_apple_usb_selector_uses_explicit_identity_constraints(self):
         device = {'location':'port','mode':'pongo','ecid':1,'chip':2,'board':3}
@@ -112,20 +77,6 @@ sys.argv=['orchard','resolve',MANIFEST,'--profile','j71b'];main()
              patch.object(adapter_module,'parse',return_value=Mock(properties={'model':b'different\0'})):
             with self.assertRaisesRegex(ValueError,'Captured ADT is not for'):
                 adapter.capture_adt()
-
-    def test_cached_firmware_archive_is_verified_without_download(self):
-        with tempfile.TemporaryDirectory() as directory:
-            archive = Path(directory)/'archive'
-            archive.write_bytes(b'firmware')
-            checksum = hashlib.sha256(b'firmware').hexdigest()
-            with patch.object(firmware,'download') as download:
-                self.assertEqual(firmware.ensure_archive('https://example.invalid/fw',8,checksum,
-                    archive,Clock(),Mock(),label='Firmware'),archive)
-                download.assert_not_called()
-                archive.write_bytes(b'corrupt!')
-                with self.assertRaisesRegex(ValueError,'digest differs'):
-                    firmware.ensure_archive('https://example.invalid/fw',8,checksum,archive,Clock(),Mock(),label='Firmware')
-                download.assert_not_called()
 
     def test_shared_mixin_packer_rejects_traversal_and_links_before_archiving(self):
         with tempfile.TemporaryDirectory() as directory:

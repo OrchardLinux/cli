@@ -72,7 +72,7 @@ class Adapter(Protocol):
 
     Discovery is read-only and raises ValueError when no unique supported device
     is present. Boot must never retry uncertain mutations. connect(device) binds
-    the selected ECID/boot; connect_saved(device) must never reprovision.
+    the selected ECID/boot.
     Exceptions propagate: the host owns confirmation/reporting, not recovery
     recipes. There are no optional members or legacy fallbacks.
     """
@@ -86,6 +86,8 @@ class Adapter(Protocol):
     STATUS: str
     CAVEATS: List[str]
     FEATURES: Dict[str, str]
+    # Board DTB file name a boot entry must carry (from [kernel] dtb).
+    DEVICETREE: Optional[str]
 
     def matches_dfu(self, device: Dict[str, Any]) -> bool: ...
 
@@ -96,11 +98,9 @@ class Adapter(Protocol):
     def boot(self, device: SelectedDevice, assets: BootAssets,
              manifest: BootRequest, progress: Progress) -> None: ...
 
+    def start_loader(self, device: SelectedDevice, loader: Dict[str, Path], progress: Progress) -> str: ...
+
     def connect(self, device: SelectedDevice) -> AbstractContextManager[Connection]: ...
-
-    def connect_saved(self, device: SelectedDevice) -> AbstractContextManager[Connection]: ...
-
-    def forget_access(self, scope: BootState) -> None: ...
 
     def capture_adt(self, device: Optional[SelectedDevice] = None) -> bytes: ...
 

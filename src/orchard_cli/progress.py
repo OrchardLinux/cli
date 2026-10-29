@@ -121,8 +121,10 @@ class Progress:
 
 
 def transfer_text(sent, total, started, initial, now):
-    unit, divisor = ('KiB', 1024) if total < 1048576 else ('MiB', 1048576)
     rate = max(0, sent - initial) / max(now - started, 0.001)
+    if total is None:  # size known only once done, as for byte-range reads
+        return f'{sent / 1048576:5.0f} MiB  {rate / 1048576:5.1f} MiB/s'
+    unit, divisor = ('KiB', 1024) if total < 1048576 else ('MiB', 1048576)
     eta = f'{(total - sent) / rate:.0f}s' if rate and sent < total else '—'
     return (f'{sent * 100 / max(total, 1):3.0f}%  '
             f'{sent / divisor:5.0f} / {total / divisor:5.0f} {unit}  '

@@ -7,7 +7,6 @@ import platform
 import re
 import shutil
 import subprocess
-import tarfile
 import tempfile
 
 from .http import open_url
@@ -16,7 +15,6 @@ from .releases import materialize
 from .transports.pongo import library_path
 
 PALERA_RELEASE = 'v2.4'
-IPSW_RELEASE = 'v3.1.739'
 USB_RULES = Path('/etc/udev/rules.d/70-orchard.rules')
 
 
@@ -83,40 +81,20 @@ def setup(progress=None):
     for command in ('ssh', 'ssh-keygen'):
         if not shutil.which(command):
             raise ValueError('Install OpenSSH first; missing ' + command)
-    if system == 'Linux':
-        apfs_fuse = os.environ.get('IPSW_APFS_FUSE_PATH') or 'apfs-fuse'
-        if not shutil.which(apfs_fuse):
-            raise ValueError('Linux firmware extraction requires apfs-fuse. '
-                             'Install https://github.com/sgan81/apfs-fuse with its FUSE runtime, '
-                             'then put apfs-fuse in PATH or set IPSW_APFS_FUSE_PATH to its executable. '
-                             'Rerun orchard setup-host afterward.')
     library_path()  # Check libusb without enumerating or opening any devices.
     if system == 'Linux' and (not shutil.which('udevadm') or not shutil.which('sudo')):
         raise ValueError('Linux host setup requires udevadm and sudo')
     binary = Path.home() / '.local/bin'
     binary.mkdir(parents=True, exist_ok=True)
     tools = {}
-    for name in ('palera1n', 'ipsw'):
+    for name in ('palera1n',):
         existing = shutil.which(name)
         if existing:
             tools[name] = existing
             continue  # Never replace a user's existing executable.
-        if name == 'palera1n':
-            filename = 'palera1n-macos-universal' if system == 'Darwin' else 'palera1n-linux-' + arch
-            source = asset('palera1n/palera1n', PALERA_RELEASE, filename, progress)
-            install_tool(source, binary / name)
-        else:
-            target = 'macOS' if system == 'Darwin' else 'linux'
-            filename = f'ipsw_{IPSW_RELEASE[1:]}_{target}_{arch}.tar.gz'
-            source = asset('blacktop/ipsw', IPSW_RELEASE, filename, progress)
-            with tempfile.TemporaryDirectory() as directory, tarfile.open(source, 'r:gz') as archive:
-                members = [m for m in archive if m.isfile() and Path(m.name).name == 'ipsw']
-                if len(members) != 1 or not 0 < members[0].size <= 512 * 1024 * 1024:
-                    raise ValueError('Unexpected ipsw archive')
-                executable = Path(directory) / 'ipsw'
-                with archive.extractfile(members[0]) as stream, executable.open('wb') as output:
-                    shutil.copyfileobj(stream, output)
-                install_tool(executable, binary / name)
+        filename = 'palera1n-macos-universal' if system == 'Darwin' else 'palera1n-linux-' + arch
+        source = asset('palera1n/palera1n', PALERA_RELEASE, filename, progress)
+        install_tool(source, binary / name)
         tools[name] = str(binary / name)
     if system == 'Linux':
         rules = usb_rules(grp.getgrgid(os.getgid()).gr_name)

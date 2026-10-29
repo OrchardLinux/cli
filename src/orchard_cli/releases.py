@@ -21,43 +21,6 @@ from .manifests import ManifestError, check_source, local_file, validate, verify
 MAX_MANIFEST = 1024 * 1024
 
 
-def launcher_record(profile, ecid):
-    from .state import DeviceState
-    return DeviceState(profile, ecid).root / 'launcher.json'
-
-
-def record_launcher(profile, ecid):
-    """Remember which launcher this device's installation needs."""
-    from .state import private_directory
-    path = launcher_record(profile, ecid)
-    private_directory(path.parent)
-    temporary = path.with_suffix('.pending')
-    temporary.write_text(json.dumps({'manifest': launch_manifest(profile)}) + '\n')
-    temporary.chmod(0o600)
-    temporary.replace(path)
-
-
-def launch_manifest(profile, ecid=None):
-    """Select public launch assets from the detected device, never a distro.
-
-    An installation keeps the launcher it was installed for: the one recorded
-    at install time, or, for installs older than this record, the device's
-    pinned legacy launcher.
-    """
-    boot = hardware_device(profile)['boot']
-    source = boot.get('launch_manifest')
-    if ecid is not None:
-        path = launcher_record(profile, ecid)
-        if path.is_file() and not path.is_symlink():
-            source = json.loads(path.read_text()).get('manifest')
-        elif boot.get('legacy_launch_manifest'):
-            source = boot['legacy_launch_manifest']
-    if not isinstance(source, str) or not source.startswith('https://'):
-        raise ValueError('No launch assets published for connected device ' + profile)
-    check_source({'url': source}, 'launch manifest')
-    return source
-
-
 def default_manifest(profile):
     return cache_root() / 'public' / profile / 'install.toml'
 
@@ -197,13 +160,13 @@ def select_manifest(source, profile, progress=None, clock=None, purpose='install
         bundle = local_bundle if 'file' in receipt else None
     elif expected_distro and document.get('distro') != expected_distro:
         raise ValueError('Registered distro does not match manifest')
-    allowed = ('orchard.install',) if purpose == 'install' else ('orchard.install', 'orchard.boot')
+    allowed = {'install': ('orchard.install',)}.get(purpose, ('orchard.install', 'orchard.boot'))
     if document['kind'] not in allowed or document['device'] != profile:
         raise ValueError('Manifest is not compatible with this device/operation')
     if document['boot_method'] != 'checkm8-pongo':
         raise ValueError('This Orchard build implements only checkm8-pongo')
     if document['protocol'] != 1:
-        raise ValueError('Unsupported device protocol')
+        raise ValueError('Unsupported device protocol; this manifest is for another Orchard version')
     actual = tuple(int(part) for part in version('orchard-cli').split('.'))
     minimum = tuple(int(part) for part in document['min_orchard'].split('.'))
     if actual < minimum:
