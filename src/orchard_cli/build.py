@@ -24,6 +24,7 @@ except ImportError:
 from . import sources, kernel as kernels
 
 _BASE_PRODUCER = kernels.build_base
+_DEVICE_PRODUCER = kernels.build_device
 
 
 def configured_device(directory):
@@ -93,11 +94,13 @@ def kernel_base_key(hardware, device, cache):
         'kernel/upstream.lock', 'kernel/configs/' + platform, 'kernel/series/' + platform,
         'kernel/series.py', 'kernel/patches',
         'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
-        'kernel/stage-modules.py', 'buildenv.py',
+        'kernel/stage-modules.py', 'kernel/write-receipt.py', 'kernel/sources.toml',
+        '__init__.py', 'buildenv.py',
     ])
     # Source preparation is already represented by its resulting tree. Hash
     # only the binary/SDK producer, not unrelated functions in kernel.py.
-    producer = hashlib.sha256(inspect.getsource(_BASE_PRODUCER).encode()).hexdigest()
+    producer = hashlib.sha256(''.join(inspect.getsource(item) for item in
+        (_BASE_PRODUCER, kernels._verify_producer, kernels._tree_digest, kernels._record)).encode()).hexdigest()
     sdk = digest(Path(__file__).with_name('kernel_sdk.py'))
     mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
     return hashlib.sha256((recipes + producer + sdk + tree + mode).encode()).hexdigest()
@@ -105,9 +108,14 @@ def kernel_base_key(hardware, device, cache):
 
 def kernel_key(hardware, device, base_key):
     """Device layer: DTB selection and external drivers, reusing the compiled base."""
-    recipes = recipe_key(hardware, ['devices/' + device + '/device.toml', 'kernel/modules/' + device,
+    platform = kernels.layout(hardware, device)[0]
+    recipes = recipe_key(hardware, ['devices/' + device, 'kernel/modules/' + device,
+                                    'kernel/modules/' + platform, 'kernel/write-receipt.py',
+                                    'kernel/sources.toml', '__init__.py',
                                     'kernel/build-modules', 'kernel/stage-modules.py'])
-    return hashlib.sha256((base_key + recipes).encode()).hexdigest()
+    producer = hashlib.sha256(''.join(inspect.getsource(item) for item in
+        (_DEVICE_PRODUCER, kernels._verify_producer, kernels._tree_digest, kernels._record)).encode()).hexdigest()
+    return hashlib.sha256((base_key + recipes + producer).encode()).hexdigest()
 
 
 _HELD_LOCKS = set()
@@ -230,6 +238,39 @@ def has_loader_patches(hardware):
     return any((Path(hardware) / 'boot/m1n1/patches').rglob('*.patch'))
 
 
+def _loader_source_tree(source):
+    """Snapshot local edits without changing the checkout or its index."""
+    source = Path(source)
+    if not (source / '.git').exists():
+        raise ValueError(f'Loader source is not a Git checkout: {source}; it was preserved')
+    dirty = subprocess.check_output(['git', '-C', str(source), 'submodule', 'foreach', '--quiet',
+                                     '--recursive', 'git status --porcelain --untracked-files=all'],
+                                    stderr=subprocess.PIPE)
+    if dirty.strip():
+        raise ValueError('Loader submodule has local changes; build it explicitly and supply --loader')
+    return sources.working_tree(source)
+
+
+def _loader_recipe(hardware, device):
+    recipe = recipe_key(hardware, ['boot/m1n1', 'buildenv.py'])
+    mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
+    # Older entries were keyed only by recipes, even for edited workspaces.
+    recipe = hashlib.sha256(('loader-v2:' + recipe + ':' + mode).encode()).hexdigest()
+    return recipe, hardware / '.work/m1n1' / device / recipe
+
+
+def _loader_key(hardware, device):
+    recipe, work = _loader_recipe(hardware, device)
+    source = work / 'source'
+    if not source.exists():
+        return recipe
+    tree = _loader_source_tree(source)
+    baseline = work / 'orchard-cli-source-tree'
+    if baseline.is_file() and baseline.read_text().strip() == tree:
+        return recipe
+    return hashlib.sha256((recipe + ':source:' + tree).encode()).hexdigest()
+
+
 # What the static tools are built from; the rest of the recovery directory is
 # recovery runtime and doesn't change them.
 TOOL_INPUTS = ['boot/initramfs/recovery/' + name for name in
@@ -294,12 +335,23 @@ def prepare_components(hardware=None, cache=None, *, device, kernel=None,
             busybox = _prepare_tools(hardware, components) / 'busybox'
         if loader is None:
             def produce_loader(stage):
-                argv = [hardware / 'boot/m1n1/build', device, '--output', stage / 'm1n1.bin']
-                if (hardware / 'boot/m1n1/.work' / device).exists():
+                _, work = _loader_recipe(hardware, device)
+                source = work / 'source'
+                before = _loader_source_tree(source) if source.exists() else None
+                argv = [hardware / 'boot/m1n1/build', device,
+                        '--work-dir', work, '--output', stage / 'm1n1.bin']
+                if source.exists():
                     argv.append('--resume')
                 command(*argv)
-            directory = cached_component(components, 'm1n1-' + device,
-                lambda: recipe_key(hardware, ['boot/m1n1', 'buildenv.py']), produce_loader)
+                after = _loader_source_tree(source)
+                if before is not None and before != after:
+                    raise ValueError('Loader source changed during build; source was preserved and result was not cached')
+                if before is None:
+                    (work / 'orchard-cli-source-tree').write_text(after + '\n')
+            recipe, _ = _loader_recipe(hardware, device)
+            with component_lock(hardware / '.work/m1n1-locks' / device / recipe):
+                directory = cached_component(components, 'm1n1-' + device,
+                    lambda: _loader_key(hardware, device), produce_loader)
             loader = directory / 'm1n1.bin'
     return {name: Path(path).resolve() for name, path in
             dict(kernel=kernel, busybox=busybox, loader=loader, pongo=pongo).items()}

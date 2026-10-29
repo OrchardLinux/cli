@@ -131,6 +131,48 @@ class DeviceIsolation(unittest.TestCase):
         self.assertEqual((rows[0]['ecid'],rows[0]['boot_id']),(2,BOOT_B))
         self.assertEqual(rows[0]['serial_port'],'/dev/cu.device')
 
+    def test_macos_hubs_do_not_inherit_child_device_serial_ports(self):
+        phone = {'IOObjectClass':'IOUSBHostDevice','idVendor':0x05ac,'idProduct':0x4144,
+                 'locationID':123,'USB Product Name':'Orchard n61_ram',
+                 'IORegistryEntryChildren':[
+                     {'IOObjectClass':'IOUSBHostInterface','IORegistryEntryChildren':[
+                         {'IOObjectClass':'IOSerialBSDClient','IOCalloutDevice':'/dev/cu.phone'}]}]}
+        other = {'IOObjectClass':'IOUSBHostDevice','idVendor':0x1234,'idProduct':1,
+                 'locationID':124,'IORegistryEntryChildren':[
+                     {'IOObjectClass':'IOSerialBSDClient','IOCalloutDevice':'/dev/cu.other'}]}
+        inner = {'IOObjectClass':'IOUSBHostDevice','idVendor':0x05ac,'idProduct':0x8004,
+                 'locationID':120,'USB Product Name':'AppleUSB2Hub',
+                 'IORegistryEntryChildren':[phone,other]}
+        outer = {'IOObjectClass':'IOUSBHostDevice','idVendor':0x05ac,'idProduct':0x8004,
+                 'locationID':100,'USB Product Name':'AppleUSB2Hub',
+                 'IORegistryEntryChildren':[inner]}
+        raw = plistlib.dumps([outer])
+        with patch.object(usb.sys,'platform','darwin'), patch.object(usb.subprocess,'run',return_value=
+                subprocess.CompletedProcess([],0,raw,b'')):
+            rows = {row['location']:row for row in usb.devices()}
+        self.assertEqual(set(rows),{100,120,123})
+        self.assertIsNone(rows[100]['serial_port'])
+        self.assertIsNone(rows[120]['serial_port'])
+        self.assertEqual(rows[123]['serial_port'],'/dev/cu.phone')
+        self.assertEqual(rows[123]['product'],'Orchard n61_ram')
+
+    def test_a8_usb_identity_is_parsed_numerically_on_both_hosts(self):
+        serial = 'CPID:7000 BDID:06 ECID:0000123456789ABC'
+        expected = (0x7000, 0x06, 0x123456789abc)
+        node = {'IOObjectClass':'IOUSBHostDevice', 'idVendor':0x05ac, 'idProduct':0x1227,
+                'locationID':123, 'USB Serial Number':serial, 'USB Product Name':'Apple DFU'}
+        with patch.object(usb.sys,'platform','darwin'), patch.object(usb.subprocess,'run',return_value=
+                subprocess.CompletedProcess([],0,plistlib.dumps([node]),b'')):
+            mac = usb.devices()[0]
+        self.assertEqual(tuple(mac[k] for k in ('chip','board','ecid')),expected)
+
+        node = self.root/'1-1'
+        node.mkdir()
+        for name,value in {'idVendor':'05ac','idProduct':'1227','serial':serial}.items():
+            (node/name).write_text(value)
+        linux = linux_usb.devices(self.root)[0]
+        self.assertEqual(tuple(linux[k] for k in ('chip','board','ecid')),expected)
+
     def test_linux_usb_descriptor_identifies_device_and_boot_without_serial_commands(self):
         node = self.root/'1-2'
         node.mkdir()

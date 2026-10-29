@@ -5,13 +5,15 @@
 The file is the same for every unit of a model: apple_z2 fills each
 calibration record from the DT properties m1n1 copies from the ADT at boot.
 
-Three input forms:
+Input forms:
 - convert(): an mtprops profile whose "Constructed Firmware" is one
   preconstructed HBPP14 packet (J71b).
 - convert_packets(): an mtprops profile whose "Constructed Firmware" is an
   array of preconstructed packets (iPhone 7 Plus); makez2fw's Gen2 path.
 - convert_mtfw(): an MTFW image (IM4P payload) listing HBPP load items per
   personality (iPad 7); makez2fw's HBPP item path.
+- convert_gen1(): a legacy Z2 mtprops data packet (iPhone 6), with the
+  Gen1 bootstrap from Corellium Project Sandcastle.
 
 convert_packets() and convert_mtfw() are ports of Paul Praschl's (Pauli1Go)
 GPL-2.0-or-later makez2fw (mtfw.c, makez2fw.c), which builds on Corellium's
@@ -36,7 +38,8 @@ INIT, SEND, WAIT, CONFIG, RAW_XFER, CALIBRATION = 0, 1, 3, 4, 5, 6
 PROVIDERS = {'multi-touch-calibration': 0, 'orb-gap-cal': 1, 'orb-force-cal': 2,
              'shape-dynamic-accel-cal': 3, 'multitouch-to-display-offset': 4,
              'firefly-calibration': 5, 'pressure-effect-correction': 6,
-             'firefly-p100-calibration': 7, 'ext-multi-touch-calibration': 8}
+             'firefly-p100-calibration': 7, 'ext-multi-touch-calibration': 8,
+             'prox-calibration': 9}
 
 
 def uint(value, name, maximum=0xffffffff):
@@ -68,21 +71,21 @@ def from_xe32(data):
     return lo | hi << 16
 
 
-def decode_blob(packet):
+def decode_blob(packet, *, hbpp_version=0x104):
     if len(packet) < 20 or packet[:4] != b'\x18\xe1\x30\x01':
-        raise ValueError('Not a prefixed HBPP14 blob')
-    words_minus_one = struct.unpack_from('>H', packet, 4)[0]
-    size = (words_minus_one + 1) * 4
+        raise ValueError('Not a prefixed HBPP blob')
+    words = struct.unpack_from('>H', packet, 4)[0]
+    size = (words + (hbpp_version >= 0x104)) * 4
     if len(packet) != 16 + size:
-        raise ValueError('HBPP14 length mismatch or extra trailing packets')
+        raise ValueError('HBPP length mismatch or extra trailing packets')
     if sum(packet[4:10]) != struct.unpack_from('>H', packet, 10)[0]:
-        raise ValueError('HBPP14 header checksum mismatch')
+        raise ValueError('HBPP header checksum mismatch')
     payload = swapped(packet[12:-4])
     if sum(payload) & 0xffffffff != from_xe32(packet[-4:]):
-        raise ValueError('HBPP14 payload checksum mismatch')
+        raise ValueError('HBPP payload checksum mismatch')
     address = from_xe32(packet[6:10])
     if address + size > 0x100000000:
-        raise ValueError('HBPP14 address range overflow')
+        raise ValueError('HBPP address range overflow')
     return address, payload
 
 
@@ -305,6 +308,44 @@ def container(records):
     if decode_container(output) != records:
         raise ValueError('Container roundtrip mismatch')
     return output
+
+
+def convert_gen1(profile, *, packet, touch_maximum, prox_maximum, fll_mval, ref_clk_div, clk32_clock_enable):
+    """Legacy Z2 data-form mtprops with dynamic per-unit calibration.
+
+    Corellium projectsandcastle 03db9c6ae04141eb940f3b9f56d446f50d57fadf,
+    hx-touchd/mtfw/mtfw.c:169-219 defines this Gen1 command order. INIT
+    preserves its unacknowledged exchanges; SEND requests a separate ACK.
+    Calibration records replace its SysCfg loads at the same positions.
+    The N61 packet uses full payload-word counts, before HBPP 0x104.
+    Board recipes supply the clock values from Apple's matching kernel
+    personality; the legacy mtprops packet contains no Firmware Config.
+    """
+    if packet != 'Z2' or profile.get('PreconstructedBootloadPacketType') != packet:
+        raise ValueError('Unexpected Gen1 packet type')
+    payload = profile.get('Constructed Firmware')
+    if not isinstance(payload, bytes):
+        raise ValueError('Expected data-form Gen1 constructed firmware')
+    if 'Firmware Config' in profile:
+        raise ValueError('Gen1 firmware with an unsupported config')
+    address, firmware = decode_blob(payload, hbpp_version=0x103)
+    if address != 0:
+        raise ValueError('Unexpected Gen1 firmware load address')
+    providers = []
+    records = [(INIT, b'\x19\xc1')] + [(INIT, HBPP_INIT + b'\x18\xe1' * 6)] * 3
+    records.append(calibration_record('prox-calibration', 0x10009600, prox_maximum, providers))
+    records.append(calibration_record('multi-touch-calibration', 0x10009000, touch_maximum, providers))
+    records.append((SEND, payload))
+    boot = [(0x10003060, uint(fll_mval, 'FLL multiplier')),
+            (0x1000305c, uint(ref_clk_div, 'reference clock divider')), (0x10003058, 6),
+            (0x10003000, 3), (0x10003518, uint(clk32_clock_enable, '32K clock enable'))]
+    records += [(SEND, register_packet(address, 0xffffffff, value)) for address, value in boot]
+    records += [(SEND, REQUEST_CALIBRATION), (INIT, bytes.fromhex('1d5334001000000100000045'))]
+    return container(records), {'packet': packet, 'generation': 1,
+                                'firmware_packet_preserved_verbatim': True,
+                                'firmware_packet_bytes': len(payload), 'firmware_payload_bytes': len(firmware),
+                                'firmware_address': address, 'calibration': providers,
+                                'register_operations': len(boot), 'command_sequence': [c for c, p in records]}
 
 
 def convert_packets(profile, config, *, packet):

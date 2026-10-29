@@ -57,11 +57,14 @@ def run_process_group(argv, *, timeout, **kwargs):
     with subprocess.Popen(argv, start_new_session=True, **kwargs) as process:
         try:
             returncode = process.wait(timeout=timeout)
+            if returncode:
+                raise subprocess.CalledProcessError(returncode, argv)
         except BaseException:
-            os.killpg(process.pid, signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             raise
-    if returncode:
-        raise subprocess.CalledProcessError(returncode, argv)
 
 
 def boot(device, assets, manifest, progress, *, profile, chip, board, product):
@@ -73,6 +76,8 @@ def boot(device, assets, manifest, progress, *, profile, chip, board, product):
         if not executable:
             raise ValueError('palera1n is required on the host to boot Pongo')
         usb.selected(device['location'], device['ecid'], chip=chip, board=board, mode='dfu')
+    pongo.preflight()
+    if device['mode'] == 'dfu':
         progress.phase('Booting Pongo')
         progress.phase('Wait for the Apple logo to appear. If it does not disappear after a few seconds, '
                        'disconnect and reconnect the cable at the iPad once.')

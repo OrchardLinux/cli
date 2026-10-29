@@ -122,7 +122,10 @@ class LibUSB:
         self.claimed = False
 
     def _bind(self, name, result, *args):
-        fn = getattr(self.lib, name)
+        try:
+            fn = getattr(self.lib, name)
+        except AttributeError as error:
+            raise PongoError(f'libusb-1.0 is missing required symbol {name}') from error
         fn.argtypes = args
         fn.restype = result
 
@@ -241,6 +244,11 @@ def matches_target(target, bus, ports):
             raise PongoError('Invalid selected macOS USB location')
         return ports == tuple(chain)
     raise PongoError('Unsupported USB host')
+
+
+def preflight():
+    """Check the library and required symbols without opening a device."""
+    LibUSB()
 
 
 def wait_prompt(usb, seconds=15):

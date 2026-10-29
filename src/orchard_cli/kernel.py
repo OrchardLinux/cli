@@ -7,6 +7,7 @@ names its platform and DTB in devices/<device>/device.toml.
 """
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -180,6 +181,58 @@ def prepare_source(hardware, cache, device):
     return source, work / 'output'
 
 
+def _record(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Expected a regular kernel component file: ' + str(path))
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return {'bytes': path.stat().st_size, 'sha256': digest.hexdigest()}
+
+
+def _tree_digest(root):
+    """Bind a cached SDK or in-tree module set, including executable modes."""
+    root = Path(root)
+    entries = {}
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('Linked cached kernel input: ' + str(path))
+        if path.is_file():
+            entries[path.relative_to(root).as_posix()] = {**_record(path), 'mode': path.stat().st_mode & 0o777}
+        elif not path.is_dir():
+            raise ValueError('Unsupported cached kernel input: ' + str(path))
+    return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _verify_producer(hardware, device, directory, receipt, tree):
+    """Check the shared image and every platform DTB against hardware's receipt."""
+    platform, _ = layout(hardware, device)
+    expected_source = receipt.get('source', {})
+    work = work_directory(hardware, device)
+    config = Path(hardware) / 'kernel/configs' / platform / 'config'
+    if (receipt.get('schema') != 1 or receipt.get('platform') != platform or
+            expected_source.get('commit') != pin(hardware)['commit'] or
+            expected_source.get('tree') != tree or
+            expected_source.get('prepared_tree') != (work / 'prepared-tree').read_text().strip() or
+            expected_source.get('patch_list_sha256') != _record(work / 'applied-patches')['sha256'] or
+            expected_source.get('config_sha256') != _record(config)['sha256']):
+        raise ValueError('Cached kernel producer source or platform differs')
+    files = receipt.get('files')
+    if not isinstance(files, dict):
+        raise ValueError('Cached kernel producer inventory is missing')
+    dtbs = {p.relative_to(directory).as_posix() for p in (Path(directory) / 'dtbs').rglob('*') if p.is_file()}
+    expected_dtbs = {name for name in files if name.startswith('dtbs/')}
+    if not dtbs or dtbs != expected_dtbs:
+        raise ValueError('Cached kernel producer DTB inventory differs')
+    for name in {'Image.gz', 'kernel.release'} | dtbs:
+        if files.get(name) != _record(Path(directory) / name):
+            raise ValueError('Cached kernel producer component differs: ' + name)
+    if receipt.get('kernel_release') != (Path(directory) / 'kernel.release').read_text().strip():
+        raise ValueError('Cached kernel producer release differs')
+
+
 def build_base(hardware, cache, device, output):
     """One-time fill using hardware's existing full producer, not a new API.
 
@@ -203,7 +256,15 @@ def build_base(hardware, cache, device, output):
         shutil.copytree(work / 'full/dtbs', output / 'dtbs')
         shutil.copytree(work / 'in-tree/lib', output / 'lib')
         export_sdk(compiler_output, output / 'sdk')
-        (output / 'inputs.json').write_text(json.dumps({'source_tree': tree}) + '\n')
+        inputs = {'source_tree': tree}
+        if (hardware / 'kernel/write-receipt.py').is_file():
+            producer = work / 'full/receipt.json'
+            receipt = json.loads(producer.read_text())
+            _verify_producer(hardware, device, output, receipt, tree)
+            shutil.copy2(producer, output / 'producer-receipt.json')
+            inputs.update(sdk_sha256=_tree_digest(output / 'sdk'),
+                          modules_sha256=_tree_digest(output / 'lib'))
+        (output / 'inputs.json').write_text(json.dumps(inputs) + '\n')
     if sources.working_tree(source) != tree:
         raise ValueError('Kernel source changed during build; refusing result')
 
@@ -215,7 +276,8 @@ def build_device(hardware, cache, device, base, output):
     platform, dtb = layout(hardware, device)
     source, _ = prepare_source(hardware, cache, device)
     tree = sources.working_tree(source)
-    if json.loads((base / 'inputs.json').read_text())['source_tree'] != tree:
+    inputs = json.loads((base / 'inputs.json').read_text())
+    if inputs['source_tree'] != tree:
         raise ValueError('Cached kernel source identity differs; rebuild the base')
     if (base / 'sdk/.config').read_bytes() != (hardware / 'kernel/configs' / platform / 'config').read_bytes():
         raise ValueError('Cached kernel configuration differs; rebuild the base')
@@ -224,8 +286,21 @@ def build_device(hardware, cache, device, base, output):
         raise ValueError('Invalid kernel release')
     if (base / 'sdk/include/config/kernel.release').read_text().strip() != release:
         raise ValueError('Cached module SDK release differs')
+    writer = hardware / 'kernel/write-receipt.py'
+    receipt = None
+    if writer.is_file():
+        receipt = json.loads((base / 'producer-receipt.json').read_text())
+        _verify_producer(hardware, device, base, receipt, tree)
+        if (inputs.get('sdk_sha256') != _tree_digest(base / 'sdk') or
+                inputs.get('modules_sha256') != _tree_digest(base / 'lib')):
+            raise ValueError('Cached kernel SDK or in-tree modules differ')
     with tempfile.TemporaryDirectory(prefix='modules-', dir=work_directory(hardware, device)) as temporary:
         work = Path(temporary)
+        patch_list = work_directory(hardware, device) / 'applied-patches'
+        recipe_file = work / 'recipe.json'
+        if receipt is not None:
+            command(sys.executable, writer, '--capture', '--device', device, '--platform', platform,
+                    '--patch-list', patch_list, '--recipe-root', hardware, '--recipe-file', recipe_file)
         sdk = work / 'output'
         shutil.copytree(base / 'sdk', sdk)
         # The unchanged hardware staging recipe scans the compiler-output tree.
@@ -241,17 +316,29 @@ def build_device(hardware, cache, device, base, output):
                 '--file', hardware / 'kernel/Containerfile', '--context', hardware / 'kernel',
                 '--image', 'localhost/orchard-hardware-kernel-toolchain:bookworm')
         external = []
-        if (hardware / 'kernel/modules' / device).is_dir():
+        for name in dict.fromkeys((platform, device)):
+            module_sources = hardware / 'kernel/modules' / name
+            if not module_sources.is_dir():
+                continue
+            destination = work / ('external-' + name)
             command(hardware / 'kernel/build-modules', '--source', source, '--build', sdk,
-                    '--modules', hardware / 'kernel/modules' / device,
-                    '--localversion', '-orchard-' + platform, '--output', work / 'external')
-            external = ['--external', work / 'external']
+                    '--modules', module_sources,
+                    '--localversion', '-orchard-' + platform, '--output', destination)
+            external += ['--external', destination]
         command(sys.executable, hardware / 'kernel/stage-modules.py', '--build', sdk,
                 *external, '--output', work / 'staged')
         output.mkdir(parents=True)
         for name in ('Image.gz', 'kernel.release'):
             shutil.copy2(base / name, output / name)
-        shutil.copy2(base / 'dtbs' / (dtb + '.dtb'), output / (device + '.dtb'))
+        shutil.copytree(base / 'dtbs', output / 'dtbs')
+        shutil.copy2(output / 'dtbs' / (dtb + '.dtb'), output / (device + '.dtb'))
         shutil.copytree(work / 'staged/lib', output / 'lib')
+        if receipt is not None:
+            origin = receipt['source']
+            command(sys.executable, writer, '--directory', output, '--device', device,
+                    '--platform', platform, '--dtb', dtb, '--source-commit', origin['commit'],
+                    '--source-tree', tree, '--prepared-tree', origin['prepared_tree'],
+                    '--patch-list', patch_list, '--config', hardware / 'kernel/configs' / platform / 'config',
+                    '--recipe-root', hardware, '--recipe-file', recipe_file)
     if sources.working_tree(source) != tree:
         raise ValueError('Kernel source changed during module build; refusing result')

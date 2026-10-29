@@ -55,6 +55,12 @@ def main():
     check.add_argument('--boot', action='store_true', help='resolve only boot assets')
     commands.add_parser('devices', help='list USB devices without modifying them')
     commands.add_parser('setup-host', help='install missing boot tools and Linux USB permissions; no device access')
+    nfs_link = commands.add_parser('nfs-link', help='inspect or manage an experimental N61 USB NFS host link')
+    nfs_link.add_argument('operation', choices=('inspect', 'apply', 'cleanup'))
+    nfs_link.add_argument('--root-identity', type=Path, required=True, help='private staged NFS root identity')
+    nfs_link.add_argument('--location', type=lambda value: int(value, 0), help='USB location selected during DFU')
+    nfs_link.add_argument('--boot-id', help='boot UUID observed during inspection')
+    nfs_link.add_argument('--state', type=Path, help='private ownership receipt for this session')
     boot = commands.add_parser('boot', help='boot recovery from a manifest or explicit image')
     boot.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     boot.add_argument('--manifest', '--release', dest='manifest')
@@ -121,6 +127,22 @@ def main():
             elif args.action == 'setup-host':
                 from orchard_cli.host_setup import setup
                 result = setup(progress)
+            elif args.action == 'nfs-link':
+                from orchard_cli import nfs_host
+                if args.operation == 'cleanup':
+                    if args.state is None:
+                        raise ValueError('NFS link cleanup requires --state')
+                    result = nfs_host.cleanup(args.root_identity, args.state)
+                else:
+                    if args.location is None:
+                        raise ValueError('NFS link inspection requires --location')
+                    if args.operation == 'apply':
+                        if args.boot_id is None or args.state is None:
+                            raise ValueError('NFS link setup requires --boot-id and --state')
+                        result = nfs_host.apply(args.root_identity, args.location, args.boot_id, args.state)
+                    else:
+                        result = nfs_host.inspect(args.root_identity, args.location,
+                                                  expected_boot=args.boot_id, state=args.state)
             elif args.action == 'boot':
                 adapter, device = choose()
                 if args.image:

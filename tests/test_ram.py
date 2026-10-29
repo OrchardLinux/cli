@@ -1,6 +1,7 @@
 """RAM building/boot tests. Synthetic components; real packer, mocked USB."""
 from contextlib import nullcontext
 import gzip
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest.mock import Mock, patch
 
 import orchard_hardware
 from orchard_cli import boot, build, ram
+from orchard_cli.transports import pongo
 
 
 class RamTests(unittest.TestCase):
@@ -60,6 +62,10 @@ class RamTests(unittest.TestCase):
         tools = patch.object(build, 'prepare_tools', return_value=self.tools)
         tools.start()
         self.addCleanup(tools.stop)
+        self.real_pongo_preflight = pongo.preflight
+        preflight = patch.object(pongo, 'preflight')
+        self.pongo_preflight = preflight.start()
+        self.addCleanup(preflight.stop)
 
     def build(self, **kwargs):
         options = dict(init=self.init, files={'usr/bin/test': self.script}, modules=True, device='j71b')
@@ -79,6 +85,41 @@ class RamTests(unittest.TestCase):
         self.build()
         ram.verify_ram(self.output)
 
+    def test_receipt_records_sources_and_detects_changed_provenance_artifacts(self):
+        (self.kernel / 'dtbs').mkdir()
+        (self.kernel / 'dtbs/t8010-j71b.dtb').write_bytes((self.kernel / 'j71b.dtb').read_bytes())
+        files = {}
+        for path in self.kernel.rglob('*'):
+            if path.is_file():
+                files[path.relative_to(self.kernel).as_posix()] = {
+                    'bytes': path.stat().st_size, 'sha256': build.digest(path)}
+        recipe_files = {'devices/j71b/device.toml': {'bytes': 1, 'sha256': 'e' * 64}}
+        recipe_digest = hashlib.sha256(json.dumps(recipe_files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        kernel_receipt = {'schema': 1, 'device': 'j71b', 'dtb': 't8010-j71b', 'kernel_release': 'test-release',
+                          'source': {'commit': 'a' * 40, 'tree': 'f' * 40, 'prepared_tree': 'b' * 40,
+                                     'patch_list_sha256': 'c' * 64, 'config_sha256': 'd' * 64},
+                          'hardware_recipe': {'sha256': recipe_digest, 'files': recipe_files}, 'files': files}
+        (self.kernel / 'receipt.json').write_text(json.dumps(kernel_receipt))
+        self.build()
+        receipt = ram.verify_ram(self.output)
+        evidence = receipt['provenance']
+        self.assertEqual(evidence['kernel']['source']['tree'], 'f' * 40)
+        self.assertEqual(evidence['kernel']['receipt_sha256'], build.digest(self.output / 'kernel-receipt.json'))
+        self.assertEqual(evidence['firmware']['recipe_sha256'], build.digest(self.output / 'firmware-recipe.json'))
+        self.assertFalse(evidence['firmware']['included_via_recipe'])
+        self.assertIn('sha256', evidence['hardware'])
+        self.assertIn('sha256', evidence['cli']['code'])
+        for name in ('kernel-receipt.json', 'firmware-recipe.json'):
+            path = self.output / name
+            original = path.read_bytes()
+            path.write_bytes(original + b'changed')
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'changed'):
+                ram.verify_ram(self.output)
+            path.write_bytes(original)
+        (self.kernel / 'Image.gz').write_bytes(b'changed after receipt')
+        with self.assertRaisesRegex(ValueError, 'component differs'):
+            self.build()
+
     def test_custom_init_and_no_modules(self):
         custom = self.base / 'init'
         custom.write_text('#!/bin/busybox sh\necho custom\n')
@@ -97,6 +138,12 @@ class RamTests(unittest.TestCase):
         self.script.write_text('changed input')
         with self.assertRaises(ValueError):
             ram.verify_ram(self.output)
+
+    def test_changed_cli_source_during_assembly_rejects_the_build(self):
+        with patch.object(ram.provenance, 'cli', side_effect=[{'source': 'first'}, {'source': 'changed'}]), \
+                self.assertRaisesRegex(ValueError, 'source changed during RAM assembly'):
+            self.build()
+        self.assertFalse((self.output / 'build.json').exists())
 
     def test_host_launcher_edit_does_not_invalidate_build(self):
         self.build()
@@ -180,6 +227,7 @@ class RamTests(unittest.TestCase):
                 patch('builtins.input', return_value=''), patch('builtins.print') as output:
             boot.boot_ram(self.output)
         self.assertEqual(selected.call_count, 2)
+        self.pongo_preflight.assert_called_once()
         upload.assert_called_once()
         self.assertIn('NOT been verified', str(output.call_args_list))
 
@@ -331,13 +379,65 @@ class RamTests(unittest.TestCase):
                 patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
                 patch('orchard_cli.apple.boot.wait_mode') as wait, \
                 patch.object(boot.shutil, 'which', return_value='/fake/palera1n'), \
-                patch.object(boot.subprocess, 'run') as execute:
+                patch('orchard_cli.apple.boot.run_process_group') as execute:
             boot.boot_ram(self.output, yes=True)
         selected.assert_any_call('fake', 123, chip=0x8011, board=0x04, mode='dfu')
         selected.assert_any_call('fake', 123, chip=0x8011, board=0x04)
         wait.assert_called_once_with(device, 'pongo', chip=0x8011, board=0x04, product='', seconds=60)
         execute.assert_called_once()
+        self.assertEqual(execute.call_args.args[0], ['/fake/palera1n', '-p', '-k', str(self.output / 'pongo.bin')])
+        self.assertEqual(execute.call_args.kwargs['timeout'], 120)
+        self.assertEqual(Path(execute.call_args.kwargs['stdout'].name), self.output / 'palera1n.log')
+        self.assertEqual(execute.call_args.kwargs['stderr'], subprocess.STDOUT)
+        self.pongo_preflight.assert_called_once()
         upload.assert_called_once()
+
+    def test_missing_libusb_stops_before_bootstrap_or_pongo_upload(self):
+        self.build()
+        for mode in ('dfu', 'pongo'):
+            device = dict(mode=mode, chip=0x8010, board=0x18, ecid=123, location='fake')
+            with self.subTest(mode=mode), \
+                    patch.object(pongo, 'preflight', side_effect=self.real_pongo_preflight), \
+                    patch.object(pongo, 'library_path', side_effect=pongo.PongoError('libusb-1.0 is unavailable')), \
+                    patch.object(pongo.LibUSB, 'open') as open_usb, \
+                    patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                    patch('orchard_cli.apple.usb.selected') as selected, \
+                    patch('orchard_cli.transports.pongo.upload') as upload, \
+                    patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                    patch('orchard_cli.apple.boot.wait_mode') as wait, \
+                    patch.object(boot, 'verify_ram', wraps=ram.verify_ram) as verify, \
+                    patch.object(boot.shutil, 'which', return_value='/fake/palera1n'), \
+                    patch('orchard_cli.apple.boot.run_process_group') as execute, \
+                    self.assertRaisesRegex(pongo.PongoError, 'libusb-1.0 is unavailable'):
+                boot.boot_ram(self.output, yes=True)
+            self.assertEqual(verify.call_count, 2)
+            selected.assert_called_once_with('fake', 123, chip=0x8010, board=0x18, mode=mode)
+            execute.assert_not_called()
+            wait.assert_not_called()
+            upload.assert_not_called()
+            open_usb.assert_not_called()
+            self.assertFalse((self.output / 'palera1n.log').exists())
+
+    def test_dfu_bootstrap_failure_never_waits_or_uploads(self):
+        self.build()
+        device = dict(mode='dfu', chip=0x8010, board=0x18, ecid=123, location='fake')
+        failures = (subprocess.TimeoutExpired('palera1n', 120),
+                    subprocess.CalledProcessError(2, 'palera1n'), KeyboardInterrupt())
+        for failure in failures:
+            with self.subTest(error=type(failure).__name__), \
+                    patch('orchard_cli.apple.usb.sole_target', return_value=device), \
+                    patch('orchard_cli.apple.usb.selected') as selected, \
+                    patch('orchard_cli.transports.pongo.upload') as upload, \
+                    patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
+                    patch('orchard_cli.apple.boot.wait_mode') as wait, \
+                    patch.object(boot.shutil, 'which', return_value='/fake/palera1n'), \
+                    patch('orchard_cli.apple.boot.run_process_group', side_effect=failure) as execute:
+                with self.assertRaises(type(failure)):
+                    boot.boot_ram(self.output, yes=True)
+            execute.assert_called_once()
+            selected.assert_called_once_with('fake', 123, chip=0x8010, board=0x18, mode='dfu')
+            wait.assert_not_called()
+            upload.assert_not_called()
 
     def test_mismatch_refusal_stops_before_usb_mutation(self):
         self.build()
@@ -475,6 +575,9 @@ class RamTests(unittest.TestCase):
         archive = gzip.decompress((directory / 'out/initramfs.cpio.gz').read_bytes())
         self.assertIn(b'lib/firmware/brcm/test.bin', archive)
         self.assertIn(b'firmware blob', archive)
+        evidence = ram.verify_ram(directory / 'out')['provenance']['firmware']
+        self.assertTrue(evidence['included_via_recipe'])
+        self.assertEqual(evidence['recipe_sha256'], build.digest(directory / 'out/firmware-recipe.json'))
         (directory / 'rootfs/lib/firmware/brcm').mkdir(parents=True)
         (directory / 'rootfs/lib/firmware/brcm/test.bin').write_bytes(b'mine')
         with patch.object(build, 'prepare_components', return_value=self.components), \

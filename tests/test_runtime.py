@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,67 @@ class Runtime(unittest.TestCase):
         self.cache.stop()
         self.temporary.cleanup()
 
+    def assert_process_stopped(self, pid):
+        def exists():
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError as error:
+                self.fail(f'Cannot inspect test process {pid}: {error}')
+            return True
+
+        for _ in range(50):
+            if not exists():
+                return
+            try:
+                observed = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                                          capture_output=True, text=True)
+            except OSError as error:
+                self.fail(f'Cannot inspect test process {pid}: {error}')
+            state = observed.stdout.strip()
+            if observed.stderr.strip():
+                self.fail(f'Cannot inspect test process {pid}: {observed.stderr.strip()}')
+            if observed.returncode:
+                # ps returns 1 with empty output for an absent PID on macOS and
+                # Linux. Check the PID again to distinguish an exit race.
+                if observed.returncode == 1 and not state and not exists():
+                    return
+                self.fail(f'Cannot inspect test process {pid}: ps exited {observed.returncode}')
+            if not state or len(state.split()) != 1:
+                self.fail(f'Cannot inspect test process {pid}: invalid ps output {state!r}')
+            if state.startswith(('Z', 'X')):
+                return
+            time.sleep(0.05)
+        self.fail('bootstrap child remained running')
+
+    def test_process_check_accepts_only_absence_or_zombie(self):
+        with patch('os.kill', side_effect=ProcessLookupError), patch('subprocess.run') as ps:
+            self.assert_process_stopped(123)
+        ps.assert_not_called()
+        with patch('os.kill'), patch('subprocess.run', return_value=
+                subprocess.CompletedProcess([], 0, 'Z\n', '')):
+            self.assert_process_stopped(123)
+        with patch('os.kill', side_effect=[None, ProcessLookupError]), \
+                patch('subprocess.run', return_value=subprocess.CompletedProcess([], 1, '', '')):
+            self.assert_process_stopped(123)
+
+    def test_process_check_rejects_inspection_errors(self):
+        for result in (subprocess.CompletedProcess([], 1, '', 'operation not permitted'),
+                       subprocess.CompletedProcess([], 1, '', ''),
+                       subprocess.CompletedProcess([], 0, '', '')):
+            with self.subTest(result=result), patch('os.kill'), patch('subprocess.run', return_value=result), \
+                    self.assertRaisesRegex(AssertionError, 'Cannot inspect test process'):
+                self.assert_process_stopped(123)
+        with patch('os.kill', side_effect=PermissionError('operation not permitted')), \
+                self.assertRaisesRegex(AssertionError, 'Cannot inspect test process'):
+            self.assert_process_stopped(123)
+        with patch('os.kill') as probe, patch('time.sleep'), patch('subprocess.run', return_value=
+                subprocess.CompletedProcess([], 0, 'S\n', '')), \
+                self.assertRaisesRegex(AssertionError, 'remained running'):
+            self.assert_process_stopped(123)
+        self.assertTrue(all(call.args == (123, 0) for call in probe.call_args_list))
+
     def test_adapter_boot_sequence_timeouts_and_no_retry_are_preserved(self):
         from orchard_cli import devices
         from orchard_cli.apple import device as adapter_module
@@ -48,8 +110,10 @@ class Runtime(unittest.TestCase):
              patch.object(adapter_module.usb, 'selected') as selected, \
              patch.object(boot, 'wait_mode') as wait, \
              patch.object(boot, 'run_process_group') as bootstrap, \
+             patch.object(boot.pongo, 'preflight') as preflight, \
              patch.object(boot.pongo, 'upload') as upload:
             adapter.boot(device, assets, record, Mock())
+            preflight.assert_called_once()
             self.assertEqual(bootstrap.call_count, 1)
             self.assertEqual(bootstrap.call_args.args[0], ['/tools/palera1n', '-p', '-k', str(assets['pongo'])])
             self.assertEqual(bootstrap.call_args.kwargs['timeout'], 120)
@@ -63,26 +127,109 @@ class Runtime(unittest.TestCase):
             self.assertEqual(bootstrap.call_count, 2) # one success, one failed call; no retry.
             upload.assert_not_called()
 
+    def test_adapter_missing_libusb_stops_before_bootstrap_or_upload(self):
+        from orchard_cli.apple import boot
+        from orchard_cli.transports import pongo
+        assets = {'pongo': self.root / 'pongo', 'recovery': self.root / 'boot'}
+        record = {'assets': {'recovery': {'sha256': 'expected-digest'}}}
+        for mode in ('dfu', 'pongo'):
+            device = {'mode': mode, 'location': 'selected-port', 'ecid': 123}
+            with self.subTest(mode=mode), \
+                 patch.object(pongo, 'library_path', side_effect=pongo.PongoError('libusb-1.0 is unavailable')), \
+                 patch.object(pongo.LibUSB, 'open') as open_usb, \
+                 patch.object(boot.shutil, 'which', return_value='/tools/palera1n'), \
+                 patch.object(boot.usb, 'selected') as selected, \
+                 patch.object(boot, 'wait_mode') as wait, \
+                 patch.object(boot, 'run_process_group') as bootstrap, \
+                 patch.object(pongo, 'upload') as upload, \
+                 self.assertRaisesRegex(pongo.PongoError, 'libusb-1.0 is unavailable'):
+                boot.boot(device, assets, record, Mock(), profile='j71b', chip=1, board=2, product='fixture')
+            if mode == 'dfu':
+                selected.assert_called_once_with('selected-port', 123, chip=1, board=2, mode='dfu')
+            else:
+                selected.assert_not_called()
+            bootstrap.assert_not_called()
+            wait.assert_not_called()
+            upload.assert_not_called()
+            open_usb.assert_not_called()
+
+    def test_adapter_running_recovery_does_not_need_libusb(self):
+        from orchard_cli.apple import boot
+        with patch.object(boot.pongo, 'preflight') as preflight, \
+             patch.object(boot.pongo, 'upload') as upload:
+            boot.boot({'mode': 'linux'}, {}, {}, Mock(), profile='j71b', chip=1, board=2, product='fixture')
+        preflight.assert_not_called()
+        upload.assert_not_called()
+
     def test_bootstrap_timeout_stops_spawned_children(self):
         # palera1n posix_spawns checkra1n; a surviving checkra1n would exploit
         # the next DFU device behind a later command's back.
         from orchard_cli.apple import boot
         pidfile = self.root / 'child.pid'
-        script = f'sleep 300 & echo $! > {pidfile}; wait'
-        with self.assertRaises(subprocess.TimeoutExpired):
-            boot.run_process_group(['sh', '-c', script], timeout=1)
-        child = int(pidfile.read_text())
-        for _ in range(50):
-            try:
-                state = Path(f'/proc/{child}/stat').read_text().rsplit(')', 1)[1].split()[0]
-            except (FileNotFoundError, ProcessLookupError):  # gone mid-read
-                break
-            if state == 'Z':
-                break
-            time.sleep(0.05)
-        else:
-            os.kill(child, 9)
-            self.fail('bootstrap child outlived the timeout')
+        groupfile = self.root / 'group.pid'
+        script = 'echo $$ > "$2"; sleep 300 & echo $! > "$1"; wait'
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                boot.run_process_group(['sh', '-c', script, 'fixture', str(pidfile), str(groupfile)], timeout=1)
+            self.assert_process_stopped(int(pidfile.read_text()))
+        finally:
+            if groupfile.exists():
+                try:
+                    os.killpg(int(groupfile.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_bootstrap_interruption_stops_spawned_children(self):
+        child_file = self.root / 'interrupt-child.pid'
+        group_file = self.root / 'interrupt-group.pid'
+        runner = '''
+import sys
+from orchard_cli.apple.boot import run_process_group
+script = 'echo $$ > "$2"; sleep 300 & echo $! > "$1"; wait'
+try:
+    run_process_group(['sh', '-c', script, 'fixture', sys.argv[1], sys.argv[2]], timeout=10)
+except KeyboardInterrupt:
+    sys.exit(0)
+sys.exit(2)
+'''
+        worker = subprocess.Popen([sys.executable, '-c', runner, str(child_file), str(group_file)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not child_file.exists() and worker.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(child_file.exists(), 'bootstrap child did not start')
+            child = int(child_file.read_text())
+            os.kill(worker.pid, signal.SIGINT)
+            stdout, stderr = worker.communicate(timeout=5)
+            self.assertEqual(worker.returncode, 0, (stdout + stderr).decode())
+            self.assert_process_stopped(child)
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait()
+            if group_file.exists():
+                try:
+                    os.killpg(int(group_file.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_bootstrap_nonzero_exit_stops_spawned_children(self):
+        from orchard_cli.apple import boot
+        pidfile = self.root / 'failed-child.pid'
+        groupfile = self.root / 'failed-group.pid'
+        script = 'echo $$ > "$2"; sleep 300 & echo $! > "$1"; exit 7'
+        try:
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                boot.run_process_group(['sh', '-c', script, 'fixture', str(pidfile), str(groupfile)], timeout=5)
+            self.assertEqual(failure.exception.returncode, 7)
+            self.assert_process_stopped(int(pidfile.read_text()))
+        finally:
+            if groupfile.exists():
+                try:
+                    os.killpg(int(groupfile.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_bootstrap_failure_is_reported(self):
         from orchard_cli.apple import boot
@@ -278,7 +425,7 @@ def guard(event, args):
 
 sys.addaudithook(guard)
 from orchard_cli.command import main
-sys.argv = ['orchard', 'resolve', INPUT]
+sys.argv = ['orchard', 'resolve', INPUT, '--profile', 'j71b']
 main()
 '''.replace('BLOCKED', repr([str(path) for path in blocked])).replace('INPUT', repr(str(inputs / 'index.toml')))
         env = {**os.environ, 'ORCHARD_HOME': str(self.root / 'isolated-store'), 'PYTHONDONTWRITEBYTECODE': '1'}

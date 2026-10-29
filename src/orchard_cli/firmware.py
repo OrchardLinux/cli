@@ -78,15 +78,11 @@ def pack_mixin(prepared, metadata, outdir):
     return archive, record
 
 
-def recipe_for(profile, hardware=None):
-    """A device's firmware recipe, validated and supported.
-
-    From the installed hardware package, or from the hardware checkout at
-    HARDWARE (a development build against another branch).
-    """
+def recipe_path_for(profile, hardware=None):
+    """Find a device's public recipe in the installed package or a checkout."""
     if hardware is None:
         from orchard_hardware import firmware_path
-        return recipes.check(json.loads(firmware_path(profile).read_text()))
+        return firmware_path(profile)
     from .build import tomllib
     if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', profile):
         raise ValueError('Invalid device profile')
@@ -99,7 +95,12 @@ def recipe_for(profile, hardware=None):
     path = descriptor.parent.joinpath(*parts)
     if any(p.is_symlink() for p in (path, *path.parents) if descriptor.parent in (p, *p.parents)):
         raise ValueError('Firmware recipe path contains a symlink')
-    return recipes.check(json.loads(path.read_text()))
+    return path
+
+
+def recipe_for(profile, hardware=None):
+    """A device's firmware recipe, validated and supported."""
+    return recipes.check(json.loads(recipe_path_for(profile, hardware).read_text()))
 
 
 def ensure(profile, clock, progress, *, allow_download=True, hardware=None):

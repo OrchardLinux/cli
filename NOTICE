@@ -6,3 +6,7 @@ framing are informed by Corellium's Project Sandcastle and Paul Praschl's
 Gen2 mtprops and MTFW HBPP item conversions (mtfw.c, makez2fw.c):
 https://github.com/Pauli1Go/HoolockLinux-linux-firmware
 Reference revision: 944541e67b4c603df328c77d30093551de802c17.
+convert_gen1() ports the legacy Gen1 bootstrap from Corellium LLC's
+GPL-2.0-or-later hx-touchd/mtfw/mtfw.c (Copyright (C) 2020 Corellium LLC):
+https://github.com/corellium/projectsandcastle
+Reference revision: 03db9c6ae04141eb940f3b9f56d446f50d57fadf.

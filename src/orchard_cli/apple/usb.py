@@ -40,6 +40,8 @@ def devices():
         ports = []
         while descendants:
             child = descendants.pop()
+            if child.get('IOObjectClass') == 'IOUSBHostDevice':
+                continue
             descendants.extend(child.get('IORegistryEntryChildren', []))
             if child.get('IOObjectClass') == 'IOSerialBSDClient':
                 port = child.get('IOCalloutDevice')

@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import patch
 
+import orchard_hardware
+
 from orchard_cli.contracts import Adapter
 from orchard_cli import devices
 from orchard_cli.apple import device as adapter_module
@@ -51,6 +53,29 @@ class AdapterContract(unittest.TestCase):
     def test_unknown_connected_device_is_named_in_the_error(self):
         observed = {'mode': 'dfu', 'location': 'usb', 'ecid': 1, 'chip': 0x8999, 'board': 0x7f}
         with patch('orchard_cli.apple.usb.devices', return_value=[observed]):
+            with self.assertRaisesRegex(ValueError, 'not one Orchard supports'):
+                devices.choose()
+
+    def test_n61_uses_generic_adapter_and_keeps_installation_and_recovery_disabled(self):
+        descriptor = {'device': {'profile': 'n61', 'name': 'iPhone 6', 'apple_products': ['iPhone7,2']},
+                      'match': {'dfu': {'chip': 0x7000, 'board': 0x06}},
+                      'firmware': {'recipe': 'firmware.json'},
+                      'support': {'install': False, 'status': 'experimental'}}
+        original = orchard_hardware.device
+        observed = {'mode': 'dfu', 'location': 'usb', 'ecid': 1, 'chip': 0x7000, 'board': 0x06}
+        with patch.object(orchard_hardware, 'profiles', return_value=['j71b', 'n61']), \
+                patch.object(orchard_hardware, 'device', side_effect=lambda name:
+                             descriptor if name == 'n61' else original(name)), \
+                patch.object(adapter_module.usb, 'devices', return_value=[observed]):
+            adapter, selected = devices.choose()
+            self.assertEqual((adapter.PROFILE, adapter.APPLE_PRODUCT), ('n61', 'iPhone7,2'))
+            self.assertFalse(adapter.INSTALL)
+            self.assertIsNone(adapter.PRODUCT)
+            self.assertFalse(selected['resumed'])
+            self.assertEqual(selected['ecid'], observed['ecid'])
+            with self.assertRaisesRegex(ValueError, 'no Orchard recovery system'):
+                adapter.recovery_endpoint()
+            observed['board'] = 0x07
             with self.assertRaisesRegex(ValueError, 'not one Orchard supports'):
                 devices.choose()
 

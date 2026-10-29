@@ -134,6 +134,22 @@ base producers remain reusable, including the charging-worker cache. A changed
 base producer does not inherit that compatibility. Cache reuse still checks the
 complete file inventory and hashes.
 
+Loader workspaces are separated by device, the complete m1n1 recipe and the build
+environment identity. The source tree recorded after the initial build identifies
+that recipe's baseline. Tracked and untracked source edits select their own cached
+loader without changing the checkout's Git index. A workspace without a recorded
+baseline uses its source tree identity as well. Loader builds sharing a workspace
+wait for one another, even when they use different component caches. If a nested
+submodule has local changes, build the loader explicitly and pass its path with
+`--loader`.
+
+The RAM build receipt records the CLI and hardware package content hashes, plus
+the Git head and dirty state when those packages come from tracked checkouts. It
+records the kernel component receipt and a copy of the device firmware recipe
+when those are available. Explicit older kernel inputs without a receipt retain
+their image and selected DTB hashes. The receipt states whether the firmware
+recipe supplied files to the RAM image.
+
 Developer receipts are not publisher signatures or hardware qualification.
 Explicit component paths are trusted inputs: callers must keep kernel, DTB and
 modules coherent. Never automatically retry uncertain boot or storage mutations.

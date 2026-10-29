@@ -5,6 +5,7 @@ orchestration lives in build.py; compiler recipes remain hardware-owned.
 Device confirmation and upload live in boot.py.
 """
 import json
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -13,7 +14,7 @@ import struct
 import sys
 import tempfile
 
-from . import build
+from . import build, provenance
 from .build import command, digest, recipe_key
 
 
@@ -29,9 +30,76 @@ def check_busybox(path):
         raise ValueError('BusyBox must be static (no DYNAMIC or INTERP segment)')
 
 
+def _kernel_evidence(kernel, device, release):
+    """Verify an available hardware receipt before recording it in the RAM build."""
+    image, dtb = kernel / 'Image.gz', kernel / (device + '.dtb')
+    evidence = {'image_sha256': digest(image), 'dtb_sha256': digest(dtb), 'release': release}
+    receipt_path = kernel / 'receipt.json'
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        return evidence, None
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        raise ValueError('Linked kernel receipt refused')
+    data = receipt_path.read_bytes()
+    receipt = json.loads(data)
+    if (receipt.get('schema'), receipt.get('device'), receipt.get('kernel_release')) != (1, device, release):
+        raise ValueError('Kernel receipt identity differs')
+    source, hardware_recipe = receipt.get('source'), receipt.get('hardware_recipe')
+    if (not isinstance(source, dict) or any(
+            not isinstance(source.get(name), str) or not re.fullmatch('[0-9a-f]{40}', source[name])
+            for name in ('commit', 'tree', 'prepared_tree')) or any(
+            not isinstance(source.get(name), str) or not re.fullmatch('[0-9a-f]{64}', source[name])
+            for name in ('patch_list_sha256', 'config_sha256'))):
+        raise ValueError('Kernel source provenance is incomplete')
+    if not isinstance(hardware_recipe, dict) or not isinstance(hardware_recipe.get('files'), dict):
+        raise ValueError('Kernel hardware recipe is incomplete')
+    encoded = json.dumps(hardware_recipe['files'], sort_keys=True, separators=(',', ':')).encode()
+    if hardware_recipe.get('sha256') != hashlib.sha256(encoded).hexdigest():
+        raise ValueError('Kernel hardware recipe digest differs')
+    files = receipt.get('files')
+    if not isinstance(files, dict) or not {'Image.gz', device + '.dtb', 'kernel.release'} <= files.keys():
+        raise ValueError('Kernel receipt inventory is incomplete')
+    actual = set()
+    for path in kernel.rglob('*'):
+        if path.is_symlink():
+            raise ValueError('Linked kernel receipt input refused')
+        if path.is_file() and path != receipt_path:
+            actual.add(path.relative_to(kernel).as_posix())
+        elif not path.is_file() and not path.is_dir():
+            raise ValueError('Unsupported kernel receipt input')
+    if actual != files.keys():
+        raise ValueError('Kernel receipt inventory differs')
+    for name, record in files.items():
+        path = kernel / name
+        if (not isinstance(record, dict) or set(record) != {'bytes', 'sha256'} or
+                path.stat().st_size != record['bytes'] or digest(path) != record['sha256']):
+            raise ValueError('Kernel receipt component differs: ' + name)
+    selected_dtb = receipt.get('dtb')
+    if (not isinstance(selected_dtb, str) or not re.fullmatch('[a-z0-9][a-z0-9_.-]*', selected_dtb) or
+            files.get('dtbs/' + selected_dtb + '.dtb') != files[device + '.dtb']):
+        raise ValueError('Kernel receipt device tree differs')
+    evidence.update(receipt_sha256=hashlib.sha256(data).hexdigest(), source=receipt.get('source'),
+                    hardware_recipe_sha256=hardware_recipe['sha256'])
+    return evidence, data
+
+
+def _recipe_evidence(hardware, device):
+    descriptor = hardware / 'devices' / device / 'device.toml'
+    if not descriptor.is_file():
+        return None
+    description = build.tomllib.loads(descriptor.read_text())
+    if 'firmware' not in description:
+        return None
+    from .firmware import recipe_path_for
+    path = recipe_path_for(device, hardware)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Firmware recipe is missing or linked')
+    return path.read_bytes()
+
+
 def assemble_ram(hardware, output, *, kernel, busybox, loader, pongo, init,
                  files=None, hostname='orchard-ram', device, modules=False,
-                 bootargs='console=tty0 loglevel=7 rdinit=/init', sources=()):
+                 bootargs='console=tty0 loglevel=7 rdinit=/init', sources=(),
+                 firmware_included=False, firmware_recipe_sha256=None):
     """Pack a caller-owned /init and arbitrary files. No firmware or modules are
     activated here. Files map relative RAM-root destinations to local files.
     """
@@ -45,6 +113,14 @@ def assemble_ram(hardware, output, *, kernel, busybox, loader, pongo, init,
     release = (kernel / 'kernel.release').read_text().strip()
     if not release or '/' in release or len(release.split()) != 1:
         raise ValueError('Invalid kernel.release')
+    kernel_record, kernel_receipt = _kernel_evidence(kernel, device, release)
+    firmware_recipe = _recipe_evidence(hardware, device)
+    if firmware_included and firmware_recipe is None:
+        raise ValueError('Included firmware requires a device recipe')
+    firmware_sha = hashlib.sha256(firmware_recipe).hexdigest() if firmware_recipe is not None else None
+    if firmware_recipe_sha256 is not None and firmware_sha != firmware_recipe_sha256:
+        raise ValueError('Firmware recipe changed during the build')
+    source_record = {'cli': provenance.cli(), 'hardware': provenance.snapshot(hardware)}
     inputs = [init, *map(Path, (files or {}).values()), *map(Path, sources)]
     with tempfile.TemporaryDirectory(prefix='build-', dir=output) as temporary:
         work = Path(temporary)
@@ -86,9 +162,29 @@ def assemble_ram(hardware, output, *, kernel, busybox, loader, pongo, init,
         receipt = {'kind': 'orchard.ram-build', 'device': device, 'kernel_release': release,
                    'hardware_tested': False,
                    'files': {name: digest(work / name) for name in ('linux.bin', 'pongo.bin')},
-                   'sources': {str(p.resolve()): digest(p) for p in inputs}}
+                   'sources': {str(p.resolve()): digest(p) for p in inputs},
+                   'provenance': {**source_record, 'kernel': kernel_record,
+                                  'firmware': {'included_via_recipe': firmware_included, 'recipe_sha256': firmware_sha}}}
+        if source_record != {'cli': provenance.cli(), 'hardware': provenance.snapshot(hardware)}:
+            raise ValueError('CLI or hardware source changed during RAM assembly')
+        if _kernel_evidence(kernel, device, release) != (kernel_record, kernel_receipt):
+            raise ValueError('Kernel component changed during RAM assembly')
+        if _recipe_evidence(hardware, device) != firmware_recipe:
+            raise ValueError('Firmware recipe changed during RAM assembly')
+        snapshots = {}
+        if kernel_receipt is not None:
+            snapshots['kernel-receipt.json'] = kernel_receipt
+        if firmware_recipe is not None:
+            snapshots['firmware-recipe.json'] = firmware_recipe
+        for name, data in snapshots.items():
+            (work / name).write_bytes(data)
         for name in ('linux.bin', 'linux.bin.json', 'pongo.bin', 'initramfs.cpio.gz'):
             os.replace(work / name, output / name)
+        for name in ('kernel-receipt.json', 'firmware-recipe.json'):
+            if name in snapshots:
+                os.replace(work / name, output / name)
+            else:
+                (output / name).unlink(missing_ok=True)
         (output / 'build.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(f'Built {output / "linux.bin"}. No device was accessed.')
     return output
@@ -131,11 +227,16 @@ def build_directory(directory, *, hardware=None, cache=None, kernel=None,
     for tool in sorted(tools.iterdir()):
         if tool.name != 'busybox' and tool.is_file():
             files.setdefault(TOOL_DESTINATIONS.get(tool.name, 'usr/bin') + '/' + tool.name, tool)
+    firmware_sha = None
     if firmware:
         from . import firmware as firmwares
         from .progress import Clock, Progress
         recipe = firmwares.recipe_for(device, hardware)
+        recipe_path = firmwares.recipe_path_for(device, hardware)
+        firmware_sha = digest(recipe_path)
         outputs = firmwares.ensure(device, Clock(), Progress(), hardware=hardware)
+        if digest(recipe_path) != firmware_sha:
+            raise ValueError('Firmware recipe changed during acquisition')
         for item in recipe['outputs']:
             if item['destination'] in files:
                 raise ValueError(f'rootfs/ and the {device} firmware both provide {item["destination"]}')
@@ -144,7 +245,8 @@ def build_directory(directory, *, hardware=None, cache=None, kernel=None,
                                           busybox=busybox, loader=loader, pongo=pongo)
     hostname = re.sub(r'[^A-Za-z0-9_-]', '-', directory.name).strip('-_')[:63] or 'orchard-ram'
     assemble_ram(hardware, output, **components, init=init, files=files,
-                 modules=modules, hostname=hostname, device=device)
+                 modules=modules, hostname=hostname, device=device, firmware_included=firmware,
+                 firmware_recipe_sha256=firmware_sha)
     receipt = json.loads((output / 'build.json').read_text())
     # Catch newly added/removed overlay files too, not only changes to old inputs.
     receipt['overlay'] = {'path': str(overlay), 'sha256': recipe_key(directory, ['rootfs'], ignore=())}
@@ -162,6 +264,13 @@ def verify_ram(output):
         path = output / name
         if path.is_symlink() or digest(path) != expected:
             raise ValueError(f'{path} changed; rebuild before booting')
+    evidence = receipt.get('provenance', {})
+    for name, expected in (('kernel-receipt.json', evidence.get('kernel', {}).get('receipt_sha256')),
+                           ('firmware-recipe.json', evidence.get('firmware', {}).get('recipe_sha256'))):
+        if expected is not None:
+            path = output / name
+            if path.is_symlink() or digest(path) != expected:
+                raise ValueError(f'{path} changed; rebuild before booting')
     # Old charger receipts remain bootable across this host-side refactor. Their
     # source list included host launchers, which are not part of the RAM payload.
     if 'overlay' in receipt:
