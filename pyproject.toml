@@ -27,7 +27,7 @@ packages = ["orchard_cli", "orchard_cli.apple", "orchard_cli.transports", "orcha
 package-dir = {"" = "src", orchard_cli_schemas = "schemas"}
 
 [tool.setuptools.package-data]
-orchard_cli = ["py.typed"]
+orchard_cli = ["py.typed", "usb-session"]
 orchard_cli_schemas = ["v1/*.json"]
 
 [dependency-groups]

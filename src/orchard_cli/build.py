@@ -26,8 +26,12 @@ from . import sources, kernel as kernels
 _BASE_PRODUCER = kernels.build_base
 
 
-def configured_device(directory):
-    """Read the nearest orchard.toml up to the repository boundary, if present."""
+def configured(directory):
+    """Read the nearest orchard.toml up to the repository boundary, if present.
+
+    Keys: device = "board-name" (required), transport = false to leave the
+    USB session (network, SSH) out of RAM payloads.
+    """
     directory = Path(directory).expanduser().resolve()
     for parent in (directory, *directory.parents):
         config = parent / 'orchard.toml'
@@ -37,15 +41,22 @@ def configured_device(directory):
                     settings = tomllib.load(stream)
             except (OSError, ValueError) as error:
                 raise ValueError(f'{config}: {error}') from error
-            if set(settings) != {'device'}:
-                raise ValueError(f'{config}: expected only device = "board-name"')
+            if 'device' not in settings or not set(settings) <= {'device', 'transport'}:
+                raise ValueError(f'{config}: expected device = "board-name" and optional transport = false')
             device = settings['device']
             if not isinstance(device, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', device):
                 raise ValueError(f'{config}: invalid device recipe name')
-            return device
+            if not isinstance(settings.get('transport', True), bool):
+                raise ValueError(f'{config}: transport must be true or false')
+            return {'device': device, 'transport': settings.get('transport', True)}
         if (parent / '.git').exists():
             break
     return None
+
+
+def configured_device(directory):
+    settings = configured(directory)
+    return settings['device'] if settings else None
 
 
 def digest(path):

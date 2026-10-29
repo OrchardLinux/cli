@@ -8,7 +8,8 @@ import uuid
 from .linux_usb import devices as linux_devices
 from orchard_cli.state import EndpointUnavailable
 
-MODES = {0x1227: 'dfu', 0x4141: 'pongo', 0x4142: 'linux'}
+# 0x4144: a RAM payload's USB session (orchard_cli/usb-session).
+MODES = {0x1227: 'dfu', 0x4141: 'pongo', 0x4142: 'linux', 0x4144: 'ram'}
 
 
 class DeviceError(ValueError):

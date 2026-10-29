@@ -149,3 +149,27 @@ class SerialPort:
         if match.start() != 0 or int(match.group(1)) != 0:
             raise SerialError('Binary producer failed or returned extra bytes; outcome unknown')
         return data
+
+    def send_exact(self, command, data, timeout=60):
+        """Run a consumer reading exactly len(data) raw bytes from the shell's tty.
+
+        The length goes into the command (e.g. head -c N), never a heredoc; the
+        caller checks the result's checksum.
+        """
+        if not 0 < len(data) <= 16 * 1024 * 1024:
+            raise SerialError('Binary transfer length outside bounds')
+        deadline = time.monotonic() + timeout
+        self.write(b'\r', deadline)
+        self.until(self.prompt, deadline)
+        token = 'OMA_' + secrets.token_hex(12)
+        # Raw mode: no echo, no flow-control or line-editing bytes taken out.
+        line = ("stty raw -echo; printf '\\n%s\\n' " + shlex.quote(token + '_BEGIN') +
+                '; ' + command + "; code=$?; stty sane; printf '\\n%s:%s\\n' " +
+                shlex.quote(token + '_DONE') + ' "$code"\r')
+        self.write(line.encode(), deadline)
+        self.until(re.compile(rb'(?:\r?\n)' + token.encode() + rb'_BEGIN\r?\n'), deadline)
+        self.write(bytes(data), deadline)
+        _, match = self.until(re.compile(rb'\r?\n' + token.encode() +
+                                         rb'_DONE:([0-9]{1,3})\r?\n'), deadline)
+        if int(match.group(1)) != 0:
+            raise SerialError('Binary consumer failed; outcome unknown')

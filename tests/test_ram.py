@@ -60,6 +60,10 @@ class RamTests(unittest.TestCase):
         tools = patch.object(build, 'prepare_tools', return_value=self.tools)
         tools.start()
         self.addCleanup(tools.stop)
+        # The build-time RAM SSH key lives in Orchard's private state.
+        home = patch.dict('os.environ', {'ORCHARD_HOME': str(self.base / 'home')})
+        home.start()
+        self.addCleanup(home.stop)
 
     def build(self, **kwargs):
         options = dict(init=self.init, files={'usr/bin/test': self.script}, modules=True, device='j71b')
@@ -430,6 +434,25 @@ class RamTests(unittest.TestCase):
         with patch.object(build, 'prepare_components', return_value=self.components):
             ram.build_directory(example, hardware=self.hardware, modules=True)
         self.assertIn(b'test.ko\0', gzip.decompress((output / 'initramfs.cpio.gz').read_bytes()))
+
+    def test_usb_session_is_added_unless_the_project_opts_out(self):
+        example = self.base / 'example'
+        example.mkdir()
+        shutil.copyfile(self.init, example / 'init')
+        with patch.object(build, 'prepare_components', return_value=self.components):
+            ram.build_directory(example, hardware=self.hardware)
+        archive = gzip.decompress((example / 'out/initramfs.cpio.gz').read_bytes())
+        self.assertIn(b'usr/libexec/orchard/usb-session\0', archive)
+        self.assertIn(b'etc/orchard/authorized_keys\0', archive)
+        public = (self.base / 'home/private/ram-ssh/id_ed25519.pub').read_bytes()
+        self.assertIn(public, archive)
+        self.assertNotIn((self.base / 'home/private/ram-ssh/id_ed25519').read_bytes(), archive)
+        (example / 'orchard.toml').write_text('device = "j71b"\ntransport = false\n')
+        with patch.object(build, 'prepare_components', return_value=self.components):
+            ram.build_directory(example, hardware=self.hardware)
+        archive = gzip.decompress((example / 'out/initramfs.cpio.gz').read_bytes())
+        self.assertNotIn(b'usr/libexec/orchard/usb-session\0', archive)
+        self.assertNotIn(b'etc/orchard/authorized_keys\0', archive)
 
     def test_arbitrary_directory_layout_uses_active_hardware_package(self):
         for relative in ('examples/demo', 'use_cases/nested/charger 001', 'unrelated-project'):

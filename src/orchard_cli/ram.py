@@ -101,9 +101,14 @@ TOOL_DESTINATIONS = {'dropbear': 'usr/sbin', 'wpa_supplicant': 'usr/sbin', 'iw':
 def build_directory(directory, *, hardware=None, cache=None, kernel=None,
                     busybox=None, loader=None, pongo=None, modules=False, device=None,
                     firmware=False):
-    """Build any DIRECTORY/init plus optional DIRECTORY/rootfs/; no layout convention."""
+    """Build any DIRECTORY/init plus optional DIRECTORY/rootfs/; no layout convention.
+
+    Unless orchard.toml says transport = false, the payload also gets the USB
+    session helper (network, SSH; see ram_session) for its /init to start.
+    """
     directory = Path(directory).expanduser().resolve()
-    device = device if device is not None else build.configured_device(directory)
+    settings = build.configured(directory) or {}
+    device = device if device is not None else settings.get('device')
     if device is None:
         raise ValueError('No device selected: add device = "<board>" to orchard.toml')
     if hardware is None:
@@ -131,6 +136,12 @@ def build_directory(directory, *, hardware=None, cache=None, kernel=None,
     for tool in sorted(tools.iterdir()):
         if tool.name != 'busybox' and tool.is_file():
             files.setdefault(TOOL_DESTINATIONS.get(tool.name, 'usr/bin') + '/' + tool.name, tool)
+    if settings.get('transport', True):
+        from . import ram_session
+        for destination, source in ram_session.payload_files().items():
+            if destination in files:
+                raise ValueError(f'rootfs/ provides {destination}; set transport = false to supply your own')
+            files[destination] = source
     if firmware:
         from . import firmware as firmwares
         from .progress import Clock, Progress

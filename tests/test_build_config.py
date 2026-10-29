@@ -40,9 +40,16 @@ class BuildConfigTests(unittest.TestCase):
         (self.example / '.git').write_text('gitdir: elsewhere\n')
         self.assertIsNone(build.configured_device(self.example))
 
+    def test_transport_defaults_on_and_can_be_turned_off(self):
+        self.config.write_text('device = "j71b"\n')
+        self.assertEqual(build.configured(self.example), {'device': 'j71b', 'transport': True})
+        self.config.write_text('device = "j71b"\ntransport = false\n')
+        self.assertEqual(build.configured(self.example), {'device': 'j71b', 'transport': False})
+
     def test_invalid_or_unused_settings_fail_instead_of_silently_defaulting(self):
         for content in ('', 'device = [', 'device = 123', 'device = "../escape"',
-                        'device = ""', 'device = "-bad"', 'device = "j71b"\nunused = true'):
+                        'device = ""', 'device = "-bad"', 'device = "j71b"\nunused = true', 'transport = false',
+                        'device = "j71b"\ntransport = "no"'):
             with self.subTest(content=content):
                 self.config.write_text(content)
                 with self.assertRaisesRegex(ValueError, 'orchard.toml'):

@@ -38,6 +38,16 @@ def main():
     run.add_argument('directory', type=Path, help='any directory whose out/ contains the built payload')
     run.add_argument('-y', '--yes', action='store_true',
                      help='boot without prompting, including without an interactive terminal')
+    commands.add_parser('shell', help='open a root shell on the running RAM payload over USB SSH')
+    execute = commands.add_parser('exec', help='run a command on the running RAM payload: orchard exec -- CMD...')
+    execute.add_argument('remote_command', nargs='+', metavar='CMD')
+    for action, first, second in (('push', 'local', 'remote'), ('pull', 'remote', 'local')):
+        transfer = commands.add_parser(action, help=f'copy {first.upper()} to {second.upper()} '
+                                       f'on the running RAM payload, checked by SHA-256')
+        transfer.add_argument(first)
+        transfer.add_argument(second)
+        transfer.add_argument('--serial', action='store_true',
+                              help='use the USB serial shell (payloads without SSH; up to 16 MiB)')
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
@@ -91,6 +101,18 @@ def main():
                             kernel=args.kernel_dir, busybox=args.busybox, loader=args.loader,
                             pongo=args.pongo, modules=args.modules, device=args.device,
                             firmware=args.firmware)
+            return
+        if args.action in ('shell', 'exec', 'push', 'pull'):
+            from orchard_cli import ram_session
+            if args.action == 'shell':
+                raise SystemExit(ram_session.shell())
+            if args.action == 'exec':
+                command = args.remote_command[1:] if args.remote_command[0] == '--' else args.remote_command
+                raise SystemExit(ram_session.run(command))
+            if args.action == 'push':
+                ram_session.push(args.local, args.remote, serial=args.serial)
+            else:
+                ram_session.pull(args.remote, args.local, serial=args.serial)
             return
         if args.action == 'run':
             from orchard_cli.boot import run_directory
