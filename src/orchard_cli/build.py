@@ -271,6 +271,29 @@ def prepare_tools(hardware=None, cache=None, *, device):
         return _prepare_tools(hardware, cache / 'components-v2')
 
 
+def _prepare_pongo(hardware, components):
+    def produce(stage):
+        if sys.platform != 'darwin':
+            raise ValueError('Building Pongo needs macOS/Xcode; use --pongo FILE on Linux')
+        work = hardware / '.work/pongo' / recipe_key(hardware, ['boot/quiet'])
+        argv = [sys.executable, hardware / 'boot/quiet/build-pongo.py',
+                '--work-dir', work, '--output', stage / 'pongo.bin']
+        if (work / 'source').exists():
+            argv.append('--resume')
+        command(*argv)
+    return cached_component(components, 'pongo', lambda: recipe_key(hardware, ['boot/quiet']), produce) / 'pongo.bin'
+
+
+def _prepare_m1n1(hardware, components, device):
+    def produce(stage):
+        argv = [hardware / 'boot/m1n1/build', device, '--output', stage / 'm1n1.bin']
+        if (hardware / 'boot/m1n1/.work' / device).exists():
+            argv.append('--resume')
+        command(*argv)
+    return cached_component(components, 'm1n1-' + device,
+                            lambda: recipe_key(hardware, ['boot/m1n1', 'buildenv.py']), produce) / 'm1n1.bin'
+
+
 def prepare_components(hardware=None, cache=None, *, device, kernel=None,
                        busybox=None, loader=None, pongo=None):
     """Build/reuse components shared by experiments and larger images.
@@ -287,32 +310,25 @@ def prepare_components(hardware=None, cache=None, *, device, kernel=None,
         raise ValueError(f'Missing loader patches for {device}; add a loader recipe or supply --loader FILE')
     with component_lock(cache):
         if pongo is None:
-            def produce_pongo(stage):
-                if sys.platform != 'darwin':
-                    raise ValueError('Building Pongo needs macOS/Xcode; use --pongo FILE on Linux')
-                work = hardware / '.work/pongo' / recipe_key(hardware, ['boot/quiet'])
-                argv = [sys.executable, hardware / 'boot/quiet/build-pongo.py',
-                        '--work-dir', work, '--output', stage / 'pongo.bin']
-                if (work / 'source').exists():
-                    argv.append('--resume')
-                command(*argv)
-            directory = cached_component(components, 'pongo',
-                lambda: recipe_key(hardware, ['boot/quiet']), produce_pongo)
-            pongo = directory / 'pongo.bin'
+            pongo = _prepare_pongo(hardware, components)
         if kernel is None:
             kernel = _prepare_kernel(hardware, cache, device)
         if busybox is None:
             busybox = _prepare_tools(hardware, components) / 'busybox'
         if loader is None:
-            def produce_loader(stage):
-                argv = [hardware / 'boot/m1n1/build', device, '--output', stage / 'm1n1.bin']
-                if (hardware / 'boot/m1n1/.work' / device).exists():
-                    argv.append('--resume')
-                command(*argv)
-            directory = cached_component(components, 'm1n1-' + device,
-                lambda: recipe_key(hardware, ['boot/m1n1', 'buildenv.py']), produce_loader)
-            loader = directory / 'm1n1.bin'
+            loader = _prepare_m1n1(hardware, components, device)
     return {name: Path(path).resolve() for name, path in
             dict(kernel=kernel, busybox=busybox, loader=loader, pongo=pongo).items()}
+
+
+def prepare_loader(hardware=None, cache=None, *, device):
+    """Pongo and the storage-capable m1n1 that orchard launch needs, built or reused from the cache."""
+    hardware, cache = _build_context(hardware, cache, device)
+    if not has_loader_patches(hardware):
+        raise ValueError(f'Missing loader patches for {device}')
+    components = cache / 'components-v2'
+    with component_lock(cache):
+        return {'pongo': _prepare_pongo(hardware, components).resolve(),
+                'm1n1': _prepare_m1n1(hardware, components, device).resolve()}
 
 

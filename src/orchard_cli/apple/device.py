@@ -5,6 +5,7 @@ recipe, not CLI code.
 """
 from contextlib import AbstractContextManager
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 from orchard_cli.contracts import BootAssets, BootRequest, Connection, SelectedDevice
@@ -80,7 +81,6 @@ class Device:
         return apple_boot.boot(device, assets, manifest, progress,
                                profile=self.PROFILE, chip=self.CHIP, board=self.BOARD, product=self.PRODUCT)
 
-    def start_loader(self, device: SelectedDevice, assets: BootAssets,
-                     manifest: BootRequest, progress: Progress) -> str:
-        return apple_boot.start_loader(device, assets, manifest, progress, profile=self.PROFILE,
+    def start_loader(self, device: SelectedDevice, loader: Dict[str, Path], progress: Progress) -> str:
+        return apple_boot.start_loader(device, loader, progress, profile=self.PROFILE,
                                        chip=self.CHIP, board=self.BOARD, product=self.PRODUCT)

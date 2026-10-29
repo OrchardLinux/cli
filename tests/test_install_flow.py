@@ -76,7 +76,6 @@ class InstallFlow(unittest.TestCase):
         with patch('orchard_cli.service.choose', return_value=(adapter, {'mode': 'linux', 'ecid': 1, 'resumed': True})), \
              patch('orchard_cli.service.resolve', return_value=(record, {'root': image})), \
              patch('orchard_cli.service.Client', return_value=status), \
-             patch('orchard_cli.service.record_launcher'), \
              patch('orchard_cli.state.cache_root', return_value=root / 'cache'):
             output = io.StringIO()
             result = install(input_fn=lambda text: prompts.append(text) or next(replies),

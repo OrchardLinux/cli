@@ -11,7 +11,7 @@ from .progress import Clock, Progress
 from .protocol import Client
 from . import install_layout, install_remote as remote
 from .install_account import ask_secrets
-from .releases import default_manifest, record_launcher, resolve
+from .releases import default_manifest, resolve
 from .devices import choose
 
 
@@ -151,8 +151,6 @@ def install(manifest=None, *, input_fn=input, secrets_fn=ask_secrets, progress=N
         if len(finished) != 1:
             raise RuntimeError('The device did not confirm the installation; '
                                f'see {remote.DIRECTORY}/install.log on the recovery')
-        # This installation is launched by the current launcher from now on.
-        record_launcher(adapter.PROFILE, device['ecid'])
         report = {**identity, 'installed': True, 'release': record['release'],
                   'resumed': bool(device['resumed']), 'root': finished[0]['root'],
                   'boot': finished[0]['boot'], 'timing': clock.result()}

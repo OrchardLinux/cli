@@ -7,6 +7,7 @@ import time
 import tempfile
 import threading
 
+from orchard_cli.integrity import digest
 from orchard_cli.state import DeviceState, private_directory
 from orchard_cli.transports import pongo
 from . import replug, usb
@@ -141,16 +142,16 @@ def boot(device, assets, manifest, progress, *, profile, chip, board, product):
     wait_mode(device, 'linux', chip=chip, board=board, product=product, seconds=120)
 
 
-def start_loader(device, assets, manifest, progress, *, profile, chip, board, product, seconds=30):
-    """Boot the bare m1n1 loader through Pongo and return its proxy serial port."""
+def start_loader(device, loader, progress, *, profile, chip, board, product, seconds=30):
+    """Boot the bare m1n1 loader ({'pongo', 'm1n1'} files) through Pongo; return its proxy serial port."""
     if device['mode'] not in ('dfu', 'pongo'):
         raise ValueError('Put the device in DFU mode first; a running system is not rebooted')
-    pongo_from_dfu(device, assets['pongo'], progress, profile=profile, chip=chip, board=board, product=product)
+    pongo_from_dfu(device, loader['pongo'], progress, profile=profile, chip=chip, board=board, product=product)
     before = set(usb.m1n1_ports())
     progress.phase('Loading the bootloader')
     usb.selected(device['location'], device['ecid'], chip=chip, board=board)
     progress.reset_transfer()
-    pongo.upload(assets['recovery'], device['location'], manifest['assets']['recovery']['sha256'], progress.transfer)
+    pongo.upload(loader['m1n1'], device['location'], digest(loader['m1n1']), progress.transfer)
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         ports = [port for port in usb.m1n1_ports() if port not in before]

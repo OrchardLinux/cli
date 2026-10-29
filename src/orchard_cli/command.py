@@ -51,7 +51,6 @@ def main():
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
     launcher = commands.add_parser('launch', help="start an installed system from the device's boot entries")
-    launcher.add_argument('--manifest', help='override the device-selected bootloader manifest (development/testing)')
     launcher.add_argument('--entry', help='boot entry id to start without asking')
     distros = commands.add_parser('distros', help='list or register distro index locations')
     distros.add_argument('name', nargs='?')
@@ -109,7 +108,7 @@ def main():
                 result = install(source, progress=progress)
             elif args.action == 'launch':
                 from orchard_cli.launch import launch
-                result = launch(args.manifest, entry=args.entry, progress=progress)
+                result = launch(entry=args.entry, progress=progress)
             elif args.action == 'distros':
                 if bool(args.name) != bool(args.source):
                     raise ValueError('Use orchard distros NAME INDEX_URL_OR_FILE, or orchard distros to list')

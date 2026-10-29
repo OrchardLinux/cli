@@ -2,6 +2,7 @@
 import gzip
 import io
 import os
+from pathlib import Path
 import tempfile
 import unittest
 import uuid
@@ -81,6 +82,9 @@ class FakeM1n1:
                            bootargs=bootargs)
 
 
+LOADER = {'pongo': Path('/loaders/pongo.bin'), 'm1n1': Path('/loaders/j71b/m1n1.bin')}
+
+
 class LaunchFlow(unittest.TestCase):
     def run_launch(self, disk, answers=('',), entry_id=None, mode='dfu', proxy=None):
         adapter = Mock(PROFILE='j71b', NAME='iPad', DEVICETREE='t8010-j71b.dtb')
@@ -89,13 +93,12 @@ class LaunchFlow(unittest.TestCase):
         replies = iter(answers)
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, ORCHARD_HOME=home), \
                 patch.object(launch, 'choose', return_value=(adapter, {'mode': mode, 'ecid': 1})), \
-                patch.object(launch, 'launch_manifest', return_value='https://example.invalid/boot.toml'), \
-                patch.object(launch, 'resolve', return_value=({'release': 'loader-1'}, {})) as resolve, \
+                patch.object(launch, 'loader_files', return_value=LOADER) as loader, \
                 patch.object(launch, 'M1n1Proxy', return_value=proxy):
             report = launch.launch(entry=entry_id, input_fn=lambda _: next(replies),
                                    progress=Progress(io.StringIO()))
-        resolve.assert_called_once_with('https://example.invalid/boot.toml', 'j71b', ANY, clock=ANY,
-                                        purpose='launch')
+        loader.assert_called_once_with('j71b', ANY)
+        adapter.start_loader.assert_called_once_with({'mode': mode, 'ecid': 1}, LOADER, ANY)
         return report, proxy
 
     def test_boots_the_chosen_entry_from_device_storage(self):
@@ -144,13 +147,20 @@ class LaunchFlow(unittest.TestCase):
         from orchard_cli import command
         with patch('sys.argv', ['orchard', 'launch']), patch.object(launch, 'launch', return_value={}) as run:
             command.main()
-        run.assert_called_once_with(None, entry=None, progress=ANY)
+        run.assert_called_once_with(entry=None, progress=ANY)
 
-    def test_launch_source_is_device_owned(self):
-        from orchard_cli import releases
-        with patch.object(releases, 'hardware_device', return_value={'boot': {}}):
-            with self.assertRaisesRegex(ValueError, 'No launch assets'):
-                releases.launch_manifest('unsupported')
+    def test_loader_ships_with_orchard_or_is_built(self):
+        # Launching needs nothing from a distro or an install: only Pongo and m1n1.
+        import orchard_hardware
+        from orchard_cli import build
+        with patch.object(orchard_hardware, 'loader', return_value=LOADER), \
+                patch.object(build, 'prepare_loader') as built:
+            self.assertEqual(launch.loader_files('j71b', Progress(io.StringIO())), LOADER)
+        built.assert_not_called()
+        with patch.object(orchard_hardware, 'loader', return_value=None), \
+                patch.object(build, 'prepare_loader', return_value=LOADER) as built:
+            self.assertEqual(launch.loader_files('j71b', Progress(io.StringIO())), LOADER)
+        built.assert_called_once_with(device='j71b')
 
 
 if __name__ == '__main__':

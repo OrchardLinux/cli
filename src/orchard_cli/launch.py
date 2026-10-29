@@ -5,11 +5,14 @@ XBOOTLDR FAT32 partition with Boot Loader Specification entries. The host
 boots a storage-capable m1n1, reads the entries through m1n1's generic
 main_storage calls, lets the user choose, has m1n1 copy the chosen kernel,
 initrd and DTB from storage into memory, and boots it. Nothing is written.
+
+The host brings only Pongo and that m1n1, which ship with Orchard
+(orchard_hardware.loader) or are built from the hardware source, so any
+host with Orchard can launch any installed system, from any distro.
 """
 from .bootdisk import BootDiskError, Disk, read_boot
 from .devices import choose
 from .progress import Clock, Progress
-from .releases import launch_manifest, resolve
 from .service import ask, save_report
 from .state import exclusive_operation, private_directory
 from .state import DeviceState
@@ -74,17 +77,26 @@ def start(proxy, fat, entry, progress):
     proxy.boot_linux(kernel, dtb, initrd, initrd_size, entry.get('options'))
 
 
+def loader_files(profile, progress):
+    """Pongo and the storage-capable m1n1: shipped with Orchard, else built from the hardware source."""
+    import orchard_hardware
+    files = orchard_hardware.loader(profile)
+    if files is None:
+        from .build import prepare_loader
+        progress.phase('Preparing the bootloader from the hardware source')
+        files = prepare_loader(device=profile)
+    return files
+
+
 @exclusive_operation
-def launch(manifest=None, *, entry=None, input_fn=input, progress=None):
+def launch(*, entry=None, input_fn=input, progress=None):
     clock, progress = Clock(), progress or Progress()
     adapter, device = choose()
     if device['mode'] not in ('dfu', 'pongo'):
         raise ValueError(f'Put the {adapter.NAME} in DFU mode to launch an installed system')
-    manifest = manifest if manifest is not None else launch_manifest(adapter.PROFILE, device.get('ecid'))
-    record, assets = resolve(manifest, adapter.PROFILE, progress, clock=clock, purpose='launch')
-    port = adapter.start_loader(device, assets, record, progress)
+    port = adapter.start_loader(device, loader_files(adapter.PROFILE, progress), progress)
     report = {'profile': adapter.PROFILE, 'ecid': device['ecid'], 'operation': 'launch',
-              'loader': record['release'], 'entry': None, 'started': False}
+              'entry': None, 'started': False}
     path = private_directory(DeviceState(adapter.PROFILE, device['ecid']).root) / 'last-launch.json'
     with M1n1Proxy(port) as proxy:
         proxy.storage_init()
