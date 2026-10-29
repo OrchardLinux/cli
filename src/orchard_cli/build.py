@@ -230,11 +230,18 @@ def has_loader_patches(hardware):
     return any((Path(hardware) / 'boot/m1n1/patches').rglob('*.patch'))
 
 
+# What the static tools are built from; the rest of the recovery directory is
+# recovery runtime and doesn't change them.
+TOOL_INPUTS = ['boot/initramfs/recovery/' + name for name in
+               ('build-tools', 'build-tools-in-container', 'Containerfile',
+                'install-toolchain', 'upstream.lock')] + ['buildenv.py']
+
+
 def _prepare_tools(hardware, components):
     """The hardware's static recovery tools (BusyBox, Dropbear, Wi-Fi tools). Caller holds the lock."""
     def produce_tools(stage):
         work = hardware / '.work/tools'
-        work = work / recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py'])
+        work = work / recipe_key(hardware, TOOL_INPUTS)
         if not (work / 'bin/busybox').exists():
             command(hardware / 'boot/initramfs/recovery/build-tools',
                     env={**os.environ, 'OMA_RECOVERY_TOOLS_WORK': str(work)})
@@ -243,7 +250,7 @@ def _prepare_tools(hardware, components):
                 shutil.copyfile(tool, stage / tool.name)
                 (stage / tool.name).chmod(0o755)
     return cached_component(components, 'recovery-tools',
-        lambda: recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py']), produce_tools)
+        lambda: recipe_key(hardware, TOOL_INPUTS), produce_tools)
 
 
 def prepare_tools(hardware=None, cache=None, *, device):
