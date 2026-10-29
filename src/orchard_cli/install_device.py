@@ -28,6 +28,7 @@ written to the events or the log.
 """
 import gzip
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -459,6 +460,40 @@ def check_entry(boot_root, partuuid):
     raise InstallError('entry-missing', 'The system did not write a boot entry for its root')
 
 
+def install_firmware(bundle, root, *, size, sha256):
+    """The private firmware bundle (lib/firmware/... plus mixin.json) into /usr/lib/firmware.
+
+    Arch's /lib is a link to usr/lib, which the extractor never follows, so
+    firmware paths are mapped explicitly; nothing outside it is written.
+    """
+    data = bundle.read(size + 1)
+    if len(data) != size or hashlib.sha256(data).hexdigest() != sha256:
+        raise InstallError('firmware-mismatch', 'Firmware bundle size or hash differs from the plan')
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    count = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+            for member in archive:
+                name = safe_name(member.name)
+                if name == 'mixin.json':
+                    continue
+                if not (member.isfile() and name.startswith('lib/firmware/')):
+                    raise InstallError('unsafe-archive', 'Firmware bundle may contain only firmware files')
+                parent, leaf = parent_fd(root_fd, 'usr/' + name)
+                try:
+                    fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=parent)
+                    with os.fdopen(fd, 'wb') as output:
+                        output.write(archive.extractfile(member).read())
+                        os.fchown(output.fileno(), 0, 0)
+                        os.fchmod(output.fileno(), 0o644)
+                    count += 1
+                finally:
+                    os.close(parent)
+    finally:
+        os.close(root_fd)
+    return count
+
+
 # --- account -----------------------------------------------------------------
 
 def read_secrets(path):
@@ -519,6 +554,16 @@ def set_account(root, password, pin):
     return user
 
 
+def kernel_version(root):
+    """The image's one kernel: /usr/lib/modules/<version>/vmlinuz."""
+    modules = root / 'usr/lib/modules'
+    versions = sorted(d.name for d in modules.iterdir() if (d / 'vmlinuz').is_file()) if modules.is_dir() else []
+    if len(versions) != 1:
+        raise InstallError('no-kernel', 'The system image needs exactly one kernel at '
+                                        f'/usr/lib/modules/<version>/vmlinuz, found {versions}')
+    return versions[0]
+
+
 def install(plan, stream):
     disk = plan['disk']['path']
     if os.geteuid() != 0:
@@ -558,9 +603,9 @@ def install(plan, stream):
         firmware = plan.get('firmware')
         if firmware:
             with open(firmware['path'], 'rb') as bundle:
-                extract(bundle, TARGET, size=firmware['bytes'], sha256=firmware['sha256'],
-                        expanded_limit=1 << 30, compression='gzip')
-            emit('step', step='firmware', state='done')
+                files = install_firmware(bundle, TARGET, size=firmware['bytes'], sha256=firmware['sha256'])
+            Path(firmware['path']).unlink()
+            emit('step', step='firmware', state='done', files=files)
         boot_mount = TARGET / 'boot'
         boot_mount.mkdir(exist_ok=True)
         run('mount', '-t', 'vfat', boot_node, str(boot_mount))
@@ -583,10 +628,9 @@ def install(plan, stream):
         if secrets:
             emit('step', step='account', state='done', user=set_account(TARGET, *secrets))
             secrets = None
-        kernel = f'/usr/lib/modules/{entry["version"]}/vmlinuz'
-        if not (TARGET / kernel.lstrip('/')).is_file():
-            raise InstallError('no-kernel', f'The system image has no kernel at {kernel}')
-        run('chroot', str(TARGET), 'kernel-install', 'add', entry['version'], kernel, timeout=600)
+        version = kernel_version(TARGET)
+        kernel = f'/usr/lib/modules/{version}/vmlinuz'
+        run('chroot', str(TARGET), 'kernel-install', 'add', version, kernel, timeout=600)
         name = check_entry(boot_mount, plan['root']['partuuid'])
         emit('step', step='boot-entry', state='done', entry=name)
     finally:

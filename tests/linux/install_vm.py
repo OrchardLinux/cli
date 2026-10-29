@@ -74,6 +74,10 @@ printf 'title Test\\nversion %s\\nsort-key test\\nlinux /%s/%s/linux\\ninitrd /%
             info = tarfile.TarInfo(name)
             info.size, info.mode = len(data), mode
             tar.addfile(info, io.BytesIO(data))
+        for link in ('lib', 'lib64'):                      # Arch: /lib is a link to usr/lib
+            info = tarfile.TarInfo(link)
+            info.type, info.linkname = tarfile.SYMTYPE, 'usr/' + link
+            tar.addfile(info)
         for applet in ('sh', 'mkdir', 'cp', 'cat', 'printf', 'echo', 'tr'):
             info = tarfile.TarInfo('bin/' + applet)
             info.type, info.linkname = tarfile.SYMTYPE, 'busybox'
@@ -87,7 +91,8 @@ def host_openssl():
     """The VM's openssl and its libraries, at the same paths, for the account step."""
     paths = ['/usr/bin/openssl'] + [word for line in sh('ldd', '/usr/bin/openssl').decode().splitlines()
                                     for word in line.split() if word.startswith('/')]
-    return {path.lstrip('/'): (Path(path).read_bytes(), 0o755) for path in paths}
+    # Merged /usr like Arch and Fedora: /lib and /lib64 are links into usr/.
+    return {'usr/' + path.lstrip('/').removeprefix('usr/'): (Path(path).read_bytes(), 0o755) for path in paths}
 
 
 def check_account(disk, root):
@@ -104,6 +109,9 @@ def check_account(disk, root):
         tally = (target / 'var/lib/orchard/pin-tally').stat()
         assert (tally.st_mode & 0o777, tally.st_uid) == (0o700, 1000)
         assert 'pin-check' in (target / 'etc/pam.d/omarchy-lock-password').read_text()
+        firmware = target / 'usr/lib/firmware/apple/test.bin'
+        assert firmware.read_bytes() == FIRMWARE_BYTES and firmware.stat().st_mode & 0o777 == 0o644
+        assert not (target / 'mixin.json').exists()
 
         def pin_ok(value):
             return subprocess.run(['chroot', str(target), '/usr/lib/orchard/pin-check'], input=value + b'\0',
@@ -111,6 +119,23 @@ def check_account(disk, root):
         assert pin_ok(b'424242') and not pin_ok(b'424243') and not pin_ok(b'42424')
     finally:
         sh('umount', str(target))
+
+
+FIRMWARE_BYTES = b'private firmware' * 64
+
+
+def write_firmware():
+    """A bundle shaped like the CLI's firmware mixin, uploaded to /run/orchard."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w:gz') as tar:
+        for name, data in (('lib/firmware/apple/test.bin', FIRMWARE_BYTES), ('mixin.json', b'{}')):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o600
+            tar.addfile(info, io.BytesIO(data))
+    data = buffer.getvalue()
+    path = Path('/run/orchard/firmware.tar.gz')
+    path.write_bytes(data)
+    return {'path': str(path), 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
 
 
 def write_secrets():
@@ -129,7 +154,9 @@ def apfs_digest(disk):
 def install(disk, choose, image, data, label):
     (layout,) = [e for e in device(disk, 'inspect') if e['event'] == 'layout']
     option = choose(L.options(layout))
-    plan = L.plan(layout, option, image, {'id': 'test', 'version': VERSION, 'options': 'quiet'}, account=True)
+    Path('/run/orchard').mkdir(parents=True, exist_ok=True)
+    plan = L.plan(layout, option, image, {'id': 'test', 'options': 'quiet'}, account=True,
+                  firmware=write_firmware())
     with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
         json.dump(plan, f)
     secrets = write_secrets()
