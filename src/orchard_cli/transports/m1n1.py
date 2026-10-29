@@ -26,6 +26,7 @@ P_CPUFREQ_INIT = 0x1300
 M1N1_HEAP = 128 << 20   # room left to m1n1's own heap, as proxyclient does
 HOST_HEAP = 1 << 30
 BLOCK = 4096
+MAX_BLOCKS = 256   # one NVMe command in m1n1's apcie backend (orchard m1n1 patch 0003)
 
 
 class M1n1Error(RuntimeError):
@@ -164,9 +165,10 @@ class M1n1Proxy:
     def storage_shutdown(self):
         self.call(P_MAIN_STORAGE_SHUTDOWN)
 
-    def read_into(self, lba, addr):
-        if not self.call(P_MAIN_STORAGE_READ, lba, addr):
-            raise M1n1Error(f'm1n1 storage read of block {lba} failed')
+    def read_into(self, lba, addr, count=1):
+        """count blocks from lba to device memory; the count needs orchard m1n1 patch 0003."""
+        if not self.call(P_MAIN_STORAGE_READ, lba, addr, count if count > 1 else 0):
+            raise M1n1Error(f'm1n1 storage read of {count} block(s) at {lba} failed')
 
     def read_block(self, lba):
         self.read_into(lba, self.staging)
@@ -178,10 +180,12 @@ class M1n1Proxy:
         for start, length in runs:
             while length:
                 lba, skip = divmod(start, BLOCK)
-                count = min(BLOCK - skip, length)
-                if skip == 0 and count == BLOCK and (addr + offset) % BLOCK == 0:
-                    self.read_into(lba, addr + offset)
+                whole = min(length // BLOCK, MAX_BLOCKS)
+                if skip == 0 and whole and (addr + offset) % BLOCK == 0:
+                    self.read_into(lba, addr + offset, whole)
+                    count = whole * BLOCK
                 else:
+                    count = min(BLOCK - skip, length)
                     self.read_into(lba, self.staging)
                     self.call(P_MEMCPY8, addr + offset, self.staging + skip, count)
                 start, length, offset = start + count, length - count, offset + count
