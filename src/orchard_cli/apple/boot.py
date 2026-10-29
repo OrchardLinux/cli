@@ -5,6 +5,7 @@ import subprocess
 import shutil
 import time
 import tempfile
+import threading
 
 from orchard_cli.state import DeviceState, private_directory
 from orchard_cli.transports import pongo
@@ -47,6 +48,10 @@ def wait_mode(device, mode, *, chip, board, product, seconds=30):
         time.sleep(0.25)
 
 
+def _exit_on_sigterm(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def run_process_group(argv, *, timeout, **kwargs):
     """subprocess.run(check=True) that also stops the command's children.
 
@@ -54,12 +59,21 @@ def run_process_group(argv, *, timeout, **kwargs):
     alone leaves checkra1n running, and it exploits the next DFU device it
     sees, so give up on the whole process group instead.
     """
-    with subprocess.Popen(argv, start_new_session=True, **kwargs) as process:
-        try:
-            returncode = process.wait(timeout=timeout)
-        except BaseException:
-            os.killpg(process.pid, signal.SIGKILL)
-            raise
+    # A plain SIGTERM (pkill, logout) would end Orchard without unwinding;
+    # turn it into SystemExit while the group runs so it is cleaned up too.
+    previous = None
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    try:
+        with subprocess.Popen(argv, start_new_session=True, **kwargs) as process:
+            try:
+                returncode = process.wait(timeout=timeout)
+            except BaseException:
+                os.killpg(process.pid, signal.SIGKILL)
+                raise
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
     if returncode:
         raise subprocess.CalledProcessError(returncode, argv)
 
