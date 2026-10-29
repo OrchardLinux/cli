@@ -74,10 +74,10 @@ def choose_target(layout, clock, *, input_fn=input, output=print):
     return option
 
 
-def entry_for(record):
+def entry_for(record, devicetree):
     name = record.get('name', 'Linux')
     return {'id': re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'linux', 'title': name,
-            'options': record.get('cmdline', 'rootwait')}
+            'options': record.get('cmdline', 'rootwait'), 'devicetree': devicetree}
 
 
 @exclusive_operation
@@ -87,6 +87,8 @@ def install(manifest=None, *, input_fn=input, secrets_fn=ask_secrets, progress=N
     if not adapter.INSTALL:
         raise ValueError(f'Installing on the {adapter.NAME} is not available yet; '
                          'RAM boot is available for testing')
+    if not adapter.DEVICETREE:
+        raise ValueError(f'The {adapter.NAME} has no devicetree yet, so an installed system cannot boot on it')
     progress.phase(f'{adapter.NAME} ({adapter.STATUS})')
     for line in caveats(adapter):
         progress.phase(line)
@@ -130,7 +132,7 @@ def install(manifest=None, *, input_fn=input, secrets_fn=ask_secrets, progress=N
             remote.put(connection, mixin.read_bytes(), 'firmware.tar.gz')
         image = {key: root[key] for key in ('bytes', 'sha256', 'expanded_bytes')}
         image['compression'] = root.get('compression', 'zstd')
-        plan = install_layout.plan(layout, option, image, entry_for(record), account=True, firmware={
+        plan = install_layout.plan(layout, option, image, entry_for(record, adapter.DEVICETREE), account=True, firmware={
             'path': remote.DIRECTORY + '/firmware.tar.gz',
             'bytes': mixin_record['bytes'], 'sha256': mixin_record['sha256']})
         remote.put(connection, json.dumps(plan).encode(), 'plan.json')

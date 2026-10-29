@@ -59,7 +59,7 @@ class InstallFlow(unittest.TestCase):
         image.write_bytes(b'root-stream')
         mixin.write_bytes(b'firmware-bundle')
         adapter = Mock(NAME='Supported tablet', PROFILE='device', INSTALL=True, STATUS='supported',
-                       CAVEATS=[], FEATURES={}, REBOOT_MESSAGE='reboot')
+                       CAVEATS=[], FEATURES={}, REBOOT_MESSAGE='reboot', DEVICETREE='t8010-j171.dtb')
         adapter.prepare_mixin.return_value = (mixin, {'bytes': 15, 'sha256': 'b' * 64})
         fake = root / 'fake.py'
         fake.write_text(FAKE)
@@ -98,7 +98,8 @@ class InstallFlow(unittest.TestCase):
         plan = json.loads((store / 'plan.json').read_text())
         self.assertTrue(plan['account'])
         self.assertNotIn('424242', json.dumps(plan))
-        self.assertEqual(plan['entry'], {'id': 'omarchy', 'title': 'Omarchy', 'options': 'rootwait'})
+        self.assertEqual(plan['entry'], {'id': 'omarchy', 'title': 'Omarchy', 'options': 'rootwait',
+                                         'devicetree': 't8010-j171.dtb'})
         self.assertEqual(plan['firmware'], {'path': '/run/orchard/firmware.tar.gz', 'bytes': 15, 'sha256': 'b' * 64})
         self.assertEqual(result['root'], plan['root']['partuuid'])
         self.assertIn('orchard launch', output)

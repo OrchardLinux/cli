@@ -252,6 +252,8 @@ def build_device(hardware, cache, device, base, output):
         for name in ('Image.gz', 'kernel.release'):
             shutil.copy2(base / name, output / name)
         shutil.copy2(base / 'dtbs' / (dtb + '.dtb'), output / (device + '.dtb'))
+        # Every board of the platform: an installed root serves all of them.
+        shutil.copytree(base / 'dtbs', output / 'dtbs')
         shutil.copytree(work / 'staged/lib', output / 'lib')
     if sources.working_tree(source) != tree:
         raise ValueError('Kernel source changed during module build; refusing result')

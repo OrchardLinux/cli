@@ -460,7 +460,7 @@ def remove_old_entries(boot_root, partuuid):
     return removed
 
 
-def check_entry(boot_root, partuuid):
+def check_entry(boot_root, partuuid, devicetree):
     for entry in sorted((boot_root / 'loader/entries').glob('*.conf')):
         keys = {}
         for line in entry.read_text().splitlines():
@@ -471,6 +471,8 @@ def check_entry(boot_root, partuuid):
         for key in ('linux', 'devicetree'):
             if not keys.get(key) or not (boot_root / keys[key].lstrip('/')).is_file():
                 raise InstallError('entry-invalid', f'{entry.name}: {key} is missing')
+        if PurePosixPath(keys['devicetree']).name != devicetree:
+            raise InstallError('entry-invalid', f'{entry.name}: devicetree is not {devicetree}')
         for path in [line.strip().partition(' ')[2] for line in entry.read_text().splitlines()
                      if line.startswith('initrd')]:
             if not (boot_root / path.strip().lstrip('/')).is_file():
@@ -636,6 +638,9 @@ def install(plan, stream):
         write_text(TARGET / 'etc/kernel/cmdline',
                    f'root=PARTUUID={plan["root"]["partuuid"]} rw {entry.get("options", "")}'.strip() + '\n')
         write_text(TARGET / 'etc/kernel/entry-token', entry['id'] + '\n')
+        # One root serves every board of its kernel platform; kernel-install
+        # copies the DTB this file names (see hardware docs/boot-contract.md).
+        write_text(TARGET / 'etc/kernel/devicetree', entry['devicetree'] + '\n')
         write_text(TARGET / 'etc/fstab',
                    f'PARTUUID={plan["root"]["partuuid"]} / ext4 rw,relatime 0 1\n'
                    f'PARTUUID={plan["boot"]["partuuid"]} /boot vfat rw,relatime,fmask=0077,dmask=0077 0 2\n')
@@ -650,7 +655,7 @@ def install(plan, stream):
         version = kernel_version(TARGET)
         kernel = f'/usr/lib/modules/{version}/vmlinuz'
         run('chroot', str(TARGET), 'kernel-install', 'add', version, kernel, timeout=600)
-        name = check_entry(boot_mount, plan['root']['partuuid'])
+        name = check_entry(boot_mount, plan['root']['partuuid'], entry['devicetree'])
         emit('step', step='boot-entry', state='done', entry=name)
     finally:
         for point in reversed(mounts):

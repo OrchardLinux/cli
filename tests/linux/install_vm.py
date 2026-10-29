@@ -27,6 +27,7 @@ DEVICE = CLI / 'src/orchard_cli/install_device.py'
 APFS = '7c3457ef-0000-11aa-aa11-00306543ecac'
 VERSION = '7.3.0-rc1-orchard-apple-16k'
 GIB = 1 << 30
+BOARD_DTB = 't8010-j171.dtb'           # an iPad 7, not the J71b
 
 
 def sh(*argv, **kwargs):
@@ -50,15 +51,18 @@ def root_image():
     kernel_install = f'''#!/bin/sh
 export PATH=/bin
 ver=$2; kernel=$3; token=$(cat /etc/kernel/entry-token); dir=/boot/$token/$ver
+dtb=$(cat /etc/kernel/devicetree)
 mkdir -p $dir /boot/loader/entries
-cp $kernel $dir/linux; echo initrd > $dir/initrd; cp /usr/lib/modules/$ver/dtb/t8010-j71b.dtb $dir/
-printf 'title Test\\nversion %s\\nsort-key test\\nlinux /%s/%s/linux\\ninitrd /%s/%s/initrd\\ndevicetree /%s/%s/t8010-j71b.dtb\\noptions %s\\n' \\
-  $ver $token $ver $token $ver $token $ver "$(cat /etc/kernel/cmdline)" > /boot/loader/entries/$token-$ver.conf
+cp $kernel $dir/linux; echo initrd > $dir/initrd; cp /usr/lib/modules/$ver/dtb/$dtb $dir/
+printf 'title Test\\nversion %s\\nsort-key test\\nlinux /%s/%s/linux\\ninitrd /%s/%s/initrd\\ndevicetree /%s/%s/%s\\noptions %s\\n' \\
+  $ver $token $ver $token $ver $token $ver $dtb "$(cat /etc/kernel/cmdline)" > /boot/loader/entries/$token-$ver.conf
 '''
     files = {'bin/busybox': (BUSYBOX.read_bytes(), 0o755),
              'usr/bin/kernel-install': (kernel_install.encode(), 0o755),
              f'usr/lib/modules/{VERSION}/vmlinuz': (b'ARM64 kernel image' * 100, 0o644),
+             # One root for every board of the platform: the plan picks the DTB.
              f'usr/lib/modules/{VERSION}/dtb/t8010-j71b.dtb': (b'\xd0\x0d\xfe\xed' + bytes(60), 0o644),
+             f'usr/lib/modules/{VERSION}/dtb/t8010-j171.dtb': (b'\xd0\x0d\xfe\xed' + bytes(61), 0o644),
              'etc/os-release': (b'ID=test\n', 0o644),
              'etc/passwd': (b'root:x:0:0::/root:/bin/sh\ntablet:x:1000:1000::/home/tablet:/bin/sh\n', 0o644),
              'etc/group': (b'root:x:0:\ntablet:x:1000:\n', 0o644),
@@ -155,7 +159,7 @@ def install(disk, choose, image, data, label):
     (layout,) = [e for e in device(disk, 'inspect') if e['event'] == 'layout']
     option = choose(L.options(layout))
     Path('/run/orchard').mkdir(parents=True, exist_ok=True)
-    plan = L.plan(layout, option, image, {'id': 'test', 'options': 'quiet'}, account=True,
+    plan = L.plan(layout, option, image, {'id': 'test', 'options': 'quiet', 'devicetree': BOARD_DTB}, account=True,
                   firmware=write_firmware())
     with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
         json.dump(plan, f)
@@ -196,7 +200,7 @@ def main():
                 def read(lba):
                     dev.seek(lba * 4096)
                     return dev.read(4096)
-                _, _, entries = read_boot(Disk(read, 4096), 't8010-j71b.dtb')
+                _, _, entries = read_boot(Disk(read, 4096), BOARD_DTB)
             assert [e.problems for e in entries] == [[]], [e.problems for e in entries]
             assert entries[0].root == second['root']['partuuid'] != first['root']['partuuid']
             print('APFS untouched; boot entries:', [(e.id, e.root[:8]) for e in entries], '- contract valid')
@@ -227,7 +231,7 @@ def main():
                 def read(lba):
                     dev.seek(lba * 4096)
                     return dev.read(4096)
-                parts, _, entries = read_boot(Disk(read, 4096), 't8010-j71b.dtb')
+                parts, _, entries = read_boot(Disk(read, 4096), BOARD_DTB)
             types = sorted(str(p.type_guid)[:8] for p in parts)
             assert [e.problems for e in entries] == [[]] and types == ['7c3457ef', 'b921b045', 'bc13c2ff'], types
             print('case b: APFS untouched, old partition replaced by boot + root, entry valid')
