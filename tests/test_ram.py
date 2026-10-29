@@ -52,6 +52,14 @@ class RamTests(unittest.TestCase):
         self.output = self.base / 'out'
         self.components = dict(kernel=self.kernel, busybox=self.busybox,
                                loader=self.loader, pongo=self.pongo)
+        # The hardware's static tools, as build.prepare_tools returns them.
+        self.tools = self.base / 'tools'
+        self.tools.mkdir()
+        shutil.copyfile(self.busybox, self.tools / 'busybox')
+        (self.tools / 'wpa_supplicant').write_bytes(b'wpa_supplicant')
+        tools = patch.object(build, 'prepare_tools', return_value=self.tools)
+        tools.start()
+        self.addCleanup(tools.stop)
 
     def build(self, **kwargs):
         options = dict(init=self.init, files={'usr/bin/test': self.script}, modules=True, device='j71b')
@@ -182,7 +190,8 @@ class RamTests(unittest.TestCase):
                 patch('orchard_cli.command.operation_lock') as lock:
             main()
             build.assert_called_once_with(self.base, hardware=None, cache=None, kernel=None,
-                                          busybox=None, loader=None, pongo=Path('local.bin'), modules=True, device=None)
+                                          busybox=None, loader=None, pongo=Path('local.bin'), modules=True, device=None,
+                                          firmware=False)
             lock.assert_not_called()
         with patch('sys.argv', ['orchard', 'run', str(self.base)]), \
                 patch.object(boot, 'run_directory') as run:
@@ -435,6 +444,44 @@ class RamTests(unittest.TestCase):
                 if directory.name == 'charger 001':
                     archive = gzip.decompress((directory / 'out/initramfs.cpio.gz').read_bytes())
                     self.assertIn(b'charger-001\n', archive)
+
+    def test_directory_build_includes_the_hardware_tools(self):
+        directory = self.base / 'tools-project'
+        directory.mkdir()
+        shutil.copyfile(self.init, directory / 'init')
+        with patch.object(build, 'prepare_components', return_value=self.components), \
+                patch.object(build, 'cache_root', return_value=self.base / 'shared-cache'):
+            ram.build_directory(directory)
+        archive = gzip.decompress((directory / 'out/initramfs.cpio.gz').read_bytes())
+        self.assertIn(b'usr/sbin/wpa_supplicant', archive)
+        self.assertNotIn(b'usr/bin/busybox', archive)
+
+    def test_directory_build_firmware_follows_the_recipe(self):
+        from orchard_cli import firmware
+        directory = self.base / 'firmware-project'
+        directory.mkdir()
+        shutil.copyfile(self.init, directory / 'init')
+        outputs = self.base / 'firmware-outputs'
+        outputs.mkdir()
+        (outputs / ('a' * 64)).write_bytes(b'firmware blob')
+        recipe = {'outputs': [{'destination': 'lib/firmware/brcm/test.bin', 'sha256': 'a' * 64}]}
+        with patch.object(build, 'prepare_components', return_value=self.components), \
+                patch.object(build, 'cache_root', return_value=self.base / 'shared-cache'), \
+                patch.object(firmware, 'recipe_for', return_value=recipe) as recipe_for, \
+                patch.object(firmware, 'ensure', return_value=outputs) as ensure:
+            ram.build_directory(directory, firmware=True)
+        recipe_for.assert_called_once_with('j71b', self.hardware)
+        self.assertEqual(ensure.call_args.kwargs['hardware'], self.hardware)
+        archive = gzip.decompress((directory / 'out/initramfs.cpio.gz').read_bytes())
+        self.assertIn(b'lib/firmware/brcm/test.bin', archive)
+        self.assertIn(b'firmware blob', archive)
+        (directory / 'rootfs/lib/firmware/brcm').mkdir(parents=True)
+        (directory / 'rootfs/lib/firmware/brcm/test.bin').write_bytes(b'mine')
+        with patch.object(build, 'prepare_components', return_value=self.components), \
+                patch.object(firmware, 'recipe_for', return_value=recipe), \
+                patch.object(firmware, 'ensure', return_value=outputs), \
+                self.assertRaisesRegex(ValueError, 'both provide'):
+            ram.build_directory(directory, firmware=True)
 
     def test_explicit_hardware_override_takes_precedence_over_active_package(self):
         directory = self.base / 'use_cases/override'
