@@ -36,6 +36,45 @@ class RecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Wrong parameters'):
             recipe.check(sample([{'step': 'copy@1', 'input': 'blob', 'profile': 'x'}]))
 
+    def test_smartio_kext_is_named_and_checked(self):
+        recipe.check(sample([{'step': 'smartio-from-kernelcache@2', 'input': 'blob',
+                              'kext': 'com.apple.driver.AppleS8000SmartIO'}]))
+        with self.assertRaisesRegex(ValueError, 'Wrong parameters'):
+            recipe.check(sample([{'step': 'smartio-from-kernelcache@2', 'input': 'blob'}]))
+        document = recipe.check(sample([{'step': 'smartio-from-kernelcache@2', 'input': 'blob',
+                                         'kext': 'com.apple.driver.AppleX9999SmartIO'}]))
+        with self.assertRaisesRegex(ValueError, 'Unknown SmartIO kext'):
+            recipe.run(document, lambda name: b'firmware')
+
+    def test_z2_packet_is_validated_and_returned_unmodified(self):
+        import plistlib
+        from orchard_cli.apple import z2packet
+        payload = bytes(range(8))
+        words = len(payload) // 4
+        header = words.to_bytes(2, 'big') + bytes(4)
+        checksum = sum(payload) & 0xffffffff
+        tail = checksum.to_bytes(4, 'little')
+        tail = bytes((tail[1], tail[0], tail[3], tail[2]))
+        packet = z2packet.PREFIX + header + sum(header).to_bytes(2, 'big') + payload + tail
+        profile = plistlib.dumps({'C1F15,1': {'PreconstructedBootloadPacketType': 'Z2',
+                                              'Constructed Firmware': packet}})
+        self.assertEqual(z2packet.extract(profile, 'C1F15,1'), packet)
+        corrupt = plistlib.dumps({'C1F15,1': {'PreconstructedBootloadPacketType': 'Z2',
+                                              'Constructed Firmware': packet[:-5] + b'\xff' + packet[-4:]}})
+        with self.assertRaisesRegex(ValueError, 'checksum'):
+            z2packet.extract(corrupt, 'C1F15,1')
+        with self.assertRaisesRegex(ValueError, 'No preconstructed'):
+            z2packet.extract(profile, 'K1F19,4')
+        from orchard_cli.apple import z2fw
+        records = z2fw.decode_container(z2packet.convert(profile, 'C1F15,1', 0x10009000, 0x400))
+        self.assertEqual([code for code, _ in records], [z2fw.CONFIG, z2fw.CALIBRATION, z2fw.SEND])
+        self.assertEqual(records[2][1], packet)
+        recipe.check(sample([{'step': 'z2fw-from-z2-packet@1', 'input': 'blob', 'profile': 'C1F15,1',
+                              'calibration_address': 0x10009000, 'calibration_size': 0x400}]))
+
+    def test_vxd_firmware_step_is_known(self):
+        recipe.check(sample([{'step': 'vxd-firmware-from-kernelcache@1', 'input': 'blob'}]))
+
     def test_inputs_and_outputs_are_hash_checked(self):
         document = recipe.check(sample([{'step': 'copy@1', 'input': 'blob'}]))
         self.assertEqual(recipe.run(document, lambda name: b'firmware'),

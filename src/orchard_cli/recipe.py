@@ -8,7 +8,7 @@ import hashlib
 import json
 import plistlib
 
-from orchard_cli.apple import ipsw, smartio, z2fw
+from orchard_cli.apple import d5500, ipsw, smartio, z2fw, z2packet
 from orchard_cli.apple.osserialize import apple_xml
 
 
@@ -22,6 +22,16 @@ def _bluetool_hcd(step, data, expected):
 
 def _smartio(step, data, expected):
     return smartio.extract(data)[0]
+
+
+def _smartio_kext(step, data, expected):
+    if step['kext'] not in smartio.BUNDLES:
+        raise ValueError('Unknown SmartIO kext: ' + step['kext'])
+    return smartio.extract(data, step['kext'])[0]
+
+
+def _vxd(step, data, expected):
+    return d5500.extract(data)[0]
 
 
 def _im4p_payload(step, data, expected):
@@ -43,6 +53,10 @@ def _z2fw(step, data, expected):
     return output
 
 
+def _z2_packet(step, data, expected):
+    return z2packet.convert(data, step['profile'], step['calibration_address'], step['calibration_size'])
+
+
 def _z2fw_packets(step, data, expected):
     profile = _touch_profile(data, step['profile'])
     output, _ = z2fw.convert_packets(profile, apple_xml(profile['Firmware Config']), packet=step['packet'])
@@ -58,10 +72,18 @@ def _z2fw_mtfw(step, data, expected):
 STEPS = {
     'copy@1': (_copy, {}),
     'bluetool-hcd@1': (_bluetool_hcd, {}),
+    # T8010 SmartIO kext (iPad 6/7, iPhone 7).
     'smartio-from-kernelcache@1': (_smartio, {}),
+    # SmartIO kext named by bundle identifier (S8000 for A9).
+    'smartio-from-kernelcache@2': (_smartio_kext, {'kext': str}),
+    # VXD (DEVA) video-decoder firmware from AppleD5500.
+    'vxd-firmware-from-kernelcache@1': (_vxd, {}),
     'im4p-payload@1': (_im4p_payload, {}),
     # mtprops with one preconstructed packet (J71b).
     'z2fw-from-mtprops@1': (_z2fw, {'profile': str, 'packet': str, 'load_address': int, 'hbpp_version': int}),
+    # mtprops with one complete preconstructed Z2 boot packet (iPad 5), wrapped unmodified.
+    'z2fw-from-z2-packet@1': (_z2_packet, {'profile': str, 'calibration_address': int,
+                                           'calibration_size': int}),
     # mtprops with an array of preconstructed packets (iPhone 7 Plus), makez2fw's layout.
     'z2fw-from-mtprops@2': (_z2fw_packets, {'profile': str, 'packet': str}),
     # MTFW (IM4P payload) with HBPP load items per personality (iPad 7), makez2fw's layout.
