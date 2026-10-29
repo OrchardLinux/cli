@@ -8,7 +8,7 @@ import hashlib
 import json
 import plistlib
 
-from orchard_cli.apple import d5500, ipsw, smartio, z2fw, z2packet
+from orchard_cli.apple import bluetool, d5500, smartio, z2fw, z2packet
 from orchard_cli.apple.osserialize import apple_xml
 
 
@@ -17,7 +17,7 @@ def _copy(step, data, expected):
 
 
 def _bluetool_hcd(step, data, expected):
-    return ipsw.hcd_from_binary(data, expected)
+    return bluetool.hcd_from_binary(data, expected)
 
 
 def _smartio(step, data, expected):

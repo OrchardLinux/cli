@@ -1,98 +1,167 @@
-"""Shared launch uses boot artifacts, fresh firmware and device discovery only."""
-from contextlib import nullcontext
+"""Launch reads boot entries from the device through m1n1 and boots one; it never writes."""
+import gzip
 import io
-import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+import uuid
+from unittest.mock import ANY, Mock, patch
 
+from boot_image import ROOT_ARM64, XBOOTLDR, fat32, gpt_disk
 from orchard_cli import launch
-from orchard_cli.contracts import Connection
 from orchard_cli.progress import Progress
-from orchard_cli.protocol import DeviceError
-from orchard_cli.state import BootState, DeviceState
 
-BOOT='11111111-1111-4111-8111-111111111111'
+ROOT = uuid.UUID('4d6c1a2e-0000-4000-8000-000000000001')
+KERNEL = b'ARM64 Image ' * 4000
+
+
+def entry(title, version, root=ROOT, devicetree='t8010-j71b.dtb'):
+    return (f'title {title}\nversion {version}\nsort-key {title.lower()}\n'
+            f'linux /t/{version}/linux\ninitrd /t/{version}/initrd\ninitrd /t/{version}/extra\n'
+            f'devicetree /t/{version}/{devicetree}\noptions root=PARTUUID={root} rw\n')
+
+
+def image(entries, kernel=KERNEL):
+    files = {}
+    for name, text in entries.items():
+        files['/loader/entries/' + name] = text.encode()
+        version = text.split('version ')[1].split('\n')[0]
+        files[f'/t/{version}/linux'] = kernel
+        files[f'/t/{version}/initrd'] = b'initrd-one' * 900
+        files[f'/t/{version}/extra'] = b'initrd-two' * 7
+        files[f'/t/{version}/t8010-j71b.dtb'] = b'\xd0\x0d\xfe\xed' + b'D' * 500
+    return gpt_disk([(XBOOTLDR, uuid.uuid4(), 'boot', fat32(files)),
+                     (ROOT_ARM64, ROOT, 'root', b'\0' * 4096)])
+
+
+class FakeM1n1:
+    """m1n1 proxy over a disk image: storage reads only, device memory as a dict."""
+
+    def __init__(self, disk):
+        self.disk, self.memory, self.heap = disk, {}, 0x900000000
+        self.calls, self.booted = [], None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def storage_init(self):
+        self.calls.append('init')
+
+    def storage_shutdown(self):
+        self.calls.append('shutdown')
+
+    def read_block(self, lba):
+        return self.disk[lba * 4096:(lba + 1) * 4096]
+
+    def memalign(self, align, size):
+        addr = (self.heap + align - 1) & ~(align - 1)
+        self.heap = addr + size
+        return addr
+
+    def load_runs(self, runs, addr):
+        data = b''.join(self.disk[start:start + length] for start, length in runs)
+        self.memory[addr] = data
+        return len(data)
+
+    def read(self, addr, size):
+        return self.memory[addr][:size]
+
+    def gzdec(self, src, size, dst, dst_size):
+        self.memory[dst] = gzip.decompress(self.memory[src][:size])
+        return len(self.memory[dst])
+
+    def boot_linux(self, kernel, dtb, initrd, initrd_size, bootargs):
+        self.calls.append('boot')
+        initrd_data = b''.join(data for addr, data in sorted(self.memory.items())
+                               if initrd <= addr < initrd + initrd_size)
+        self.booted = dict(kernel=self.memory[kernel], dtb=self.memory[dtb], initrd=initrd_data,
+                           bootargs=bootargs)
+
+
+LOADER = {'pongo': Path('/loaders/pongo.bin'), 'm1n1': Path('/loaders/j71b/m1n1.bin')}
 
 
 class LaunchFlow(unittest.TestCase):
-    def run_flow(self, *, lost=False, discovered=True, answer='launch minimal', manifest='boot.toml'):
-        with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,ORCHARD_HOME=directory):
-            scope=BootState(DeviceState('j71b',1),BOOT)
-            connection=Connection(['not-ssh'],scope,Mock())
-            receipt={'release':'alpine','root_sha256':'a'*64,'directory':'minimal'}
-            adapter=Mock(PROFILE='j71b',NAME='iPad')
-            adapter.connect.return_value=nullcontext(connection)
-            adapter.capture_adt.side_effect=AssertionError('launch must not need the device ADT')
-            def mixin(firmware,dest):
-                dest.mkdir();path=dest/'mixin.tar.gz';path.write_bytes(b'x')
-                return path,{'bytes':1,'sha256':'a'*64}
-            adapter.prepare_mixin.side_effect=mixin
-            row={'target':'partition','directory':'minimal','receipt':receipt}
-            client=Mock()
-            def call(operation,request=None,**kwargs):
-                if operation=='status':return {'mode':'launcher','release':'launcher','installation_attempted':False}
-                if operation=='prepare':return {'status':'complete'}
-                if operation=='installations':return {'boot_id':BOOT,'selection_token':'token',
-                                                       'installations':[row] if discovered else []}
-                if operation=='launch':
-                    if lost:raise DeviceError('connection retired')
-                    return {'requested':True,'receipt':receipt}
-                raise AssertionError('Launch must not use an installation/storage mutation RPC: '+operation)
-            client.call.side_effect=call
-            ready={'ready':True,'release':'alpine','ecid':1,'boot_id':BOOT,'profile':'j71b'}
-            with patch.object(launch,'choose',return_value=(adapter,{'resumed':False})), \
-                 patch.object(launch,'resolve',return_value=({'release':'launcher'}, {'recovery':Path('boot')})) as resolve, \
-                 patch.object(launch,'launch_manifest',return_value='https://example.invalid/j71b.boot.toml') as selected_manifest, \
-                 patch.object(launch,'Client',return_value=client), \
-                 patch.object(launch,'wait_ready',return_value=ready), \
-                 patch.object(launch,'finish_ssh_access') as finish:
-                answers=iter(['y','',answer])
-                if not discovered or answer!='launch minimal':
-                    with self.assertRaises(ValueError):launch.launch(manifest,input_fn=lambda _:next(answers),progress=Progress(io.StringIO()))
-                    self.assertNotIn('launch',[c.args[0] for c in client.call.call_args_list])
-                    return
-                report=launch.launch(manifest,input_fn=lambda _:next(answers),progress=Progress(io.StringIO()))
-                self.assertTrue(report['ready'])
-                self.assertEqual(report['operation'],'launch')
-                self.assertNotIn('installed',report)
-                self.assertEqual(sum(c.args[0]=='launch' for c in client.call.call_args_list),1)
-                self.assertEqual(resolve.call_args.kwargs['purpose'],'boot')
-                if manifest is None:
-                    self.assertEqual(selected_manifest.call_args.args[0], 'j71b')
-                    self.assertEqual(resolve.call_args.args[0], 'https://example.invalid/j71b.boot.toml')
-                else:
-                    selected_manifest.assert_not_called()
-                    self.assertEqual(resolve.call_args.args[0], manifest)
-                adapter.firmware_inputs.assert_called_once()
-                self.assertFalse(adapter.firmware_inputs.call_args.kwargs['allow_download'])
-                finish.assert_called_once()
-                saved=json.loads((scope.root/'last-launch.json').read_text())
-                self.assertTrue(saved['ready'])
+    def run_launch(self, disk, answers=('',), entry_id=None, mode='dfu', proxy=None):
+        adapter = Mock(PROFILE='j71b', NAME='iPad', DEVICETREE='t8010-j71b.dtb')
+        adapter.start_loader.return_value = '/dev/cu.usbmodemTEST1'
+        proxy = proxy or FakeM1n1(disk)
+        replies = iter(answers)
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, ORCHARD_HOME=home), \
+                patch.object(launch, 'choose', return_value=(adapter, {'mode': mode, 'ecid': 1})), \
+                patch.object(launch, 'loader_files', return_value=LOADER) as loader, \
+                patch.object(launch, 'M1n1Proxy', return_value=proxy):
+            report = launch.launch(entry=entry_id, input_fn=lambda _: next(replies),
+                                   progress=Progress(io.StringIO()))
+        loader.assert_called_once_with('j71b', ANY)
+        adapter.start_loader.assert_called_once_with({'mode': mode, 'ecid': 1}, LOADER, ANY)
+        return report, proxy
 
-    def test_boot_only_resolution_and_no_install_or_format(self):self.run_flow()
-    def test_no_manifest_selects_assets_for_detected_device(self):self.run_flow(manifest=None)
+    def test_boots_the_chosen_entry_from_device_storage(self):
+        disk = image({'omarchy-2.conf': entry('Omarchy', '6.18.2'), 'omarchy-1.conf': entry('Omarchy', '6.17.9')})
+        report, proxy = self.run_launch(disk, answers=('2',))
+        self.assertTrue(report['started'])
+        self.assertEqual(report['entry']['version'], '6.17.9')
+        self.assertEqual(proxy.booted['kernel'], KERNEL)
+        self.assertEqual(proxy.booted['initrd'], b'initrd-one' * 900 + b'initrd-two' * 7)
+        self.assertTrue(proxy.booted['dtb'].startswith(b'\xd0\x0d\xfe\xed'))
+        self.assertEqual(proxy.booted['bootargs'], f'root=PARTUUID={ROOT} rw')
+        self.assertEqual(proxy.calls, ['init', 'shutdown', 'boot'])
 
-    def test_launch_source_is_device_owned(self):
-        from orchard_cli import releases
-        from orchard_hardware import device
-        expected = device('j71b')['boot']['launch_manifest']
-        self.assertEqual(releases.launch_manifest('j71b'), expected)
-        with patch.object(releases, 'hardware_device', return_value={'boot': {}}):
-            with self.assertRaisesRegex(ValueError, 'No launch assets'):
-                releases.launch_manifest('unsupported')
+    def test_default_is_the_first_bootable_entry_in_bls_order(self):
+        disk = image({'a.conf': entry('Omarchy', '6.17.9'), 'b.conf': entry('Omarchy', '6.18.2')})
+        report, _ = self.run_launch(disk)
+        self.assertEqual(report['entry']['version'], '6.18.2')
+
+    def test_gzip_kernels_are_decompressed_on_the_device(self):
+        disk = image({'a.conf': entry('Omarchy', '6.18.2')}, kernel=gzip.compress(KERNEL))
+        _, proxy = self.run_launch(disk)
+        self.assertEqual(proxy.booted['kernel'], KERNEL)
+
+    def test_entry_option_skips_the_question(self):
+        disk = image({'omarchy.conf': entry('Omarchy', '6.18.2'), 'minimal.conf': entry('Minimal', '6.18.2')})
+        report, _ = self.run_launch(disk, answers=(), entry_id='minimal')
+        self.assertEqual(report['entry']['title'], 'Minimal')
+
+    def test_unbootable_entries_are_listed_and_refused(self):
+        disk = image({'other.conf': entry('Other', '6.18.2', devicetree='t8010-j171.dtb')})
+        with self.assertRaisesRegex(ValueError, 'No bootable entry'):
+            self.run_launch(disk)
+
+    def test_storage_is_released_when_nothing_boots(self):
+        disk = image({})
+        proxy = FakeM1n1(disk)
+        with self.assertRaisesRegex(ValueError, 'No boot entries'):
+            self.run_launch(disk, proxy=proxy)
+        self.assertEqual(proxy.calls, ['init', 'shutdown'])
+
+    def test_running_systems_are_not_rebooted(self):
+        with self.assertRaisesRegex(ValueError, 'DFU mode'):
+            self.run_launch(image({}), mode='linux')
 
     def test_command_accepts_launch_without_arguments(self):
         from orchard_cli import command
         with patch('sys.argv', ['orchard', 'launch']), patch.object(launch, 'launch', return_value={}) as run:
             command.main()
-        run.assert_called_once_with(None, directory=None, target=None,
-                                    allow_firmware_download=False, progress=unittest.mock.ANY)
-    def test_unknown_handoff_transport_is_not_replayed(self):self.run_flow(lost=True)
-    def test_no_compatible_roots_stops_before_launch(self):self.run_flow(discovered=False)
-    def test_missing_exact_confirmation_stops_before_launch(self):self.run_flow(answer='yes')
+        run.assert_called_once_with(entry=None, progress=ANY)
+
+    def test_loader_ships_with_orchard_or_is_built(self):
+        # Launching needs nothing from a distro or an install: only Pongo and m1n1.
+        import orchard_hardware
+        from orchard_cli import build
+        with patch.object(orchard_hardware, 'loader', return_value=LOADER), \
+                patch.object(build, 'prepare_loader') as built:
+            self.assertEqual(launch.loader_files('j71b', Progress(io.StringIO())), LOADER)
+        built.assert_not_called()
+        with patch.object(orchard_hardware, 'loader', return_value=None), \
+                patch.object(build, 'prepare_loader', return_value=LOADER) as built:
+            self.assertEqual(launch.loader_files('j71b', Progress(io.StringIO())), LOADER)
+        built.assert_called_once_with(device='j71b')
 
 
-if __name__=='__main__':unittest.main()
+if __name__ == '__main__':
+    unittest.main()

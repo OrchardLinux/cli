@@ -5,7 +5,7 @@ import subprocess
 import sys
 import uuid
 
-from .linux_usb import devices as linux_devices
+from .linux_usb import devices as linux_devices, m1n1_ports as linux_m1n1_ports
 from orchard_cli.state import EndpointUnavailable
 
 # 0x4144: a RAM payload's USB session (orchard_cli/usb-session).
@@ -57,6 +57,36 @@ def devices():
                       'serial_port': ports[0] if ports else None})
     return found
 
+
+
+def m1n1_ports():
+    """Proxy serial port of every m1n1 USB device (1209:316d), interface 0 first."""
+    if sys.platform == 'linux':
+        return linux_m1n1_ports()
+    if sys.platform != 'darwin':
+        raise DeviceError('Unsupported USB host platform')
+    raw = subprocess.run(['/usr/sbin/ioreg', '-a', '-l', '-r', '-c', 'IOUSBHostDevice'],
+                         check=True, capture_output=True, timeout=10).stdout
+    pending = list(plistlib.loads(raw) if raw.strip() else [])
+    found = []
+    while pending:
+        node = pending.pop()
+        pending.extend(node.get('IORegistryEntryChildren', []))
+        if node.get('IOObjectClass') != 'IOUSBHostDevice' or \
+                (node.get('idVendor'), node.get('idProduct')) != (0x1209, 0x316d):
+            continue
+        ports = []
+        stack = [(child, None) for child in node.get('IORegistryEntryChildren', [])]
+        while stack:
+            child, interface = stack.pop()
+            interface = child.get('bInterfaceNumber', interface)
+            stack.extend((grandchild, interface) for grandchild in child.get('IORegistryEntryChildren', []))
+            port = child.get('IOCalloutDevice')
+            if child.get('IOObjectClass') == 'IOSerialBSDClient' and isinstance(port, str):
+                ports.append((interface if isinstance(interface, int) else 99, port))
+        if ports:
+            found.append(min(ports)[1])
+    return found
 
 def sole_target():
     targets = [item for item in devices() if item['mode'] in ('dfu', 'pongo', 'linux')]

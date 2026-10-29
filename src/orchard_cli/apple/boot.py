@@ -7,6 +7,7 @@ import time
 import tempfile
 import threading
 
+from orchard_cli.integrity import digest
 from orchard_cli.state import DeviceState, private_directory
 from orchard_cli.transports import pongo
 from . import replug, usb
@@ -116,19 +117,47 @@ def start_pongo(device, image, log, say, *, chip, board, product, seconds=30):
     return wait_mode(device, 'pongo', chip=chip, board=board, product=product, seconds=seconds)
 
 
+def pongo_from_dfu(device, image, progress, *, profile, chip, board, product):
+    """Start Pongo when the device is in DFU, logging palera1n under the device's state.
+
+    A device already in Pongo is used as it is.
+    """
+    if device['mode'] != 'dfu':
+        return
+    logs = private_directory(DeviceState(profile, device['ecid']).root / 'logs')
+    with tempfile.NamedTemporaryFile(prefix='palera1n-', suffix='.log', dir=logs, delete=False) as log:
+        start_pongo(device, image, log, progress.phase, chip=chip, board=board, product=product)
+
+
 def boot(device, assets, manifest, progress, *, profile, chip, board, product):
     if device['mode'] == 'linux':
         progress.phase('Using running recovery; no reboot or upload (timing starts at resume)')
         return
-    if device['mode'] == 'dfu':
-        logs = private_directory(DeviceState(profile, device['ecid']).root / 'logs')
-        with tempfile.NamedTemporaryFile(prefix='palera1n-', suffix='.log', dir=logs,
-                                         delete=False) as log:
-            start_pongo(device, assets['pongo'], log, progress.phase,
-                        chip=chip, board=board, product=product)
+    pongo_from_dfu(device, assets['pongo'], progress, profile=profile, chip=chip, board=board, product=product)
     progress.phase('Loading recovery')
     usb.selected(device['location'], device['ecid'], chip=chip, board=board)
     progress.reset_transfer()
     pongo.upload(assets['recovery'], device['location'], manifest['assets']['recovery']['sha256'], progress.transfer)
     progress.phase('Waiting for recovery USB')
     wait_mode(device, 'linux', chip=chip, board=board, product=product, seconds=120)
+
+
+def start_loader(device, loader, progress, *, profile, chip, board, product, seconds=30):
+    """Boot the bare m1n1 loader ({'pongo', 'm1n1'} files) through Pongo; return its proxy serial port."""
+    if device['mode'] not in ('dfu', 'pongo'):
+        raise ValueError('Put the device in DFU mode first; a running system is not rebooted')
+    pongo_from_dfu(device, loader['pongo'], progress, profile=profile, chip=chip, board=board, product=product)
+    before = set(usb.m1n1_ports())
+    progress.phase('Loading the bootloader')
+    usb.selected(device['location'], device['ecid'], chip=chip, board=board)
+    progress.reset_transfer()
+    pongo.upload(loader['m1n1'], device['location'], digest(loader['m1n1']), progress.transfer)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        ports = [port for port in usb.m1n1_ports() if port not in before]
+        if len(ports) == 1:
+            return ports[0]
+        if len(ports) > 1:
+            raise ValueError('More than one m1n1 device is connected')
+        time.sleep(0.25)
+    raise RuntimeError('The bootloader did not appear on USB; no retry was performed')

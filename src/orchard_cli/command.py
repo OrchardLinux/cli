@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Orchard: guided installation and composable device commands."""
+"""Orchard: guided installation, launch and RAM builds."""
 import argparse
 from contextlib import ExitStack
 import json
@@ -11,7 +11,6 @@ import sys
 from importlib.metadata import version
 from orchard_cli.devices import load, choose
 from orchard_cli.progress import Progress
-from orchard_cli.protocol import Client
 from orchard_cli.releases import resolve, catalogue, register
 from orchard_cli.integrity import digest
 from orchard_cli.service import install
@@ -51,11 +50,8 @@ def main():
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
-    launcher = commands.add_parser('launch', help='start an existing installation through shared recovery; no root download')
-    launcher.add_argument('--manifest', help='override the device-selected launch manifest (development/testing)')
-    launcher.add_argument('--directory', help='installed root directory, such as /omarchy')
-    launcher.add_argument('--target', help='installed partition PARTUUID')
-    launcher.add_argument('--allow-firmware-download', action='store_true', help='allow IPSW acquisition if verified host firmware cache is missing')
+    launcher = commands.add_parser('launch', help="start an installed system from the device's boot entries")
+    launcher.add_argument('--entry', help='boot entry id to start without asking')
     distros = commands.add_parser('distros', help='list or register distro index locations')
     distros.add_argument('name', nargs='?')
     distros.add_argument('source', nargs='?')
@@ -76,22 +72,6 @@ def main():
     mixin = commands.add_parser('mixin', help='prepare a data-only private mixin')
     for name in ('firmware-dir', 'output'):
         mixin.add_argument('--' + name, type=Path, required=True)
-    for action in ('status', 'diagnostics', 'targets', 'destination', 'prepare', 'install-root', 'handoff', 'abort'):
-        command = commands.add_parser(action, help='invoke the device-owned ' + action + ' operation')
-        command.add_argument('--recovery', action='store_true', help='provision access through the recovery serial shell')
-        if action in ('destination', 'install-root'):
-            command.add_argument('--target', required=True, help='observed partition identifier')
-            command.add_argument('--token', required=True, help='device-issued selection token')
-            command.add_argument('--directory', required=True)
-        if action == 'prepare':
-            command.add_argument('--mixin', type=Path, required=True)
-            command.add_argument('--receipt', type=Path, required=True)
-        if action == 'install-root':
-            command.add_argument('--image', type=Path, required=True)
-            command.add_argument('--receipt', type=Path, required=True)
-            command.add_argument('--replace', action='store_true', help='permanently delete the destination without backup')
-            command.add_argument('--destination-identity', type=json.loads, default=None,
-                                 help='JSON identity returned by destination inspection')
     args = parser.parse_args()
     progress = Progress(verbose=args.verbose)
     try:
@@ -119,7 +99,7 @@ def main():
             run_directory(args.directory, yes=args.yes)
             return
         with ExitStack() as stack:
-            if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host'):
+            if args.action in ('boot', 'capture-adt'):
                 stack.enter_context(operation_lock())
             if args.action == 'install':
                 source = args.manifest or args.source
@@ -128,8 +108,7 @@ def main():
                 result = install(source, progress=progress)
             elif args.action == 'launch':
                 from orchard_cli.launch import launch
-                result = launch(args.manifest, directory=args.directory, target=args.target,
-                                allow_firmware_download=args.allow_firmware_download, progress=progress)
+                result = launch(entry=args.entry, progress=progress)
             elif args.action == 'distros':
                 if bool(args.name) != bool(args.source):
                     raise ValueError('Use orchard distros NAME INDEX_URL_OR_FILE, or orchard distros to list')
@@ -176,30 +155,6 @@ def main():
                 adapter = load()
                 archive, result = adapter.prepare_mixin(args.firmware_dir, args.output)
                 result = {**result, 'path': str(archive)}
-            else:
-                adapter, device = choose()
-                connection = adapter.connect if args.recovery else adapter.connect_saved
-                with connection(device) as ssh:
-                    client = Client(ssh, progress)
-                    request = {}
-                    if args.action in ('destination', 'install-root'):
-                        request = {'target': args.target, 'selection_token': args.token, 'directory': args.directory}
-                    if args.action in ('prepare', 'install-root'):
-                        path = args.mixin if args.action == 'prepare' else args.image
-                        receipt = json.loads(args.receipt.read_text())
-                        if path.is_symlink() or path.stat().st_size != receipt['bytes'] or digest(path) != receipt['sha256']:
-                            raise ValueError('Explicit input differs from receipt')
-                        request.update({k: receipt[k] for k in ('bytes', 'sha256')})
-                        if args.action == 'prepare':
-                            request['release'] = client.call('status')['release']
-                        else:
-                            request['replace'] = args.replace
-                            request['destination_identity'] = args.destination_identity
-                        with path.open('rb') as source:
-                            result = client.call('prepare' if args.action == 'prepare' else 'install', request,
-                                                 source=source, size=receipt['bytes'], timeout=1200)
-                    else:
-                        result = client.call(args.action, request)
             with progress.lock:
                 progress.end_line()
             if args.action not in ('install', 'launch') or not sys.stdout.isatty():

@@ -11,8 +11,6 @@
 | `discover()` | Read-only identification of exactly one supported device. Return a validated `SelectedDevice`; raise `ValueError` when no unique supported device is available. |
 | `boot(device, assets, manifest, progress)` | Enter recovery using already-verified boot artifacts. A resumed recovery is not rebooted/uploaded. Keep identity/port checks and timeout budgets; never retry an uncertain mutation. |
 | `connect(device)` | Context-managed serial bootstrap and pinned SSH access bound to the selected ECID/boot. No host-side device storage/service recipes. |
-| `connect_saved(device)` | Context-managed use of the selected device/boot's retained pinned credentials. Never reprovision credentials or drive a login prompt. |
-| `forget_access(scope)` | Remove only the confirmed device/boot's cached host credentials. Device-side revocation and its confirmed receipt happen first. |
 | `capture_adt(device=None)` | Fresh, bounded, private Apple ADT capture for this adapter's model. When supplied, bind the confirmed device selection to the captured identity. Do not log or implicitly retain the raw tree. |
 | `firmware_inputs(clock, progress)` | Return verified cached/acquired host firmware inputs; account download time separately. No device hardware or storage mutation. |
 | `prepare_mixin(adt, firmware_dir, outdir)` | Return `(Path, MixinReceipt)` for a private data-only archive bound to the selected device/recipe. Preserve firmware hash, containment, calibration and output guards. |

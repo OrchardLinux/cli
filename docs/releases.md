@@ -57,10 +57,9 @@ Also run the hardware tests from its own repository using the same installed whe
 
 1. Publish the hardware wheel/components at their immutable tag; retain the previous complete hardware release as latest.
 2. Publish the matching CLI wheel and generated `requirements.txt` at their immutable tag.
-3. Build consuming distro images with that exact pair and the new minimum CLI version. Keep them out of latest until their launcher is available.
-4. Publish the hardware release's [shared launcher manifest and assets](https://github.com/OrchardLinux/hardware/blob/main/boot/quiet/README.md), using those exact distro roots. The default `orchard launch` command requires these, not only the wheel.
-5. Promote the complete hardware, compatible CLI and distro releases to latest in that order. Their `latest/download` URLs must remain usable throughout.
-6. Resolve the hosted distro index and qualify installation and cold-restart launch on supported hardware before announcing the release.
+3. Build consuming distro images with that exact pair and the new minimum CLI version.
+4. Promote the complete hardware, compatible CLI and distro releases to latest in that order. Their `latest/download` URLs must remain usable throughout.
+5. Resolve the hosted distro index and qualify installation and cold-restart launch on supported hardware before announcing the release.
 
 See Omarchy A's release instructions for distro assets. Local preparation does not upload assets or operate a device.
 

@@ -4,7 +4,7 @@ Host-side tools for installing, booting, and debugging Linux on supported Apple 
 
 ## Install or update
 
-Requires Linux or macOS, Python 3.9+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo, udev, and [apfs-fuse](https://github.com/sgan81/apfs-fuse) with its FUSE runtime for firmware extraction. Install `apfs-fuse` separately and put it in PATH, or set `IPSW_APFS_FUSE_PATH` to its executable. `setup-host` checks for the executable before downloading tools or installing USB rules.
+Requires Linux or macOS, Python 3.9+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo and udev. Device firmware is read straight from Apple's restore image by byte range: about 40 MB instead of a 7 GB download, with no extraction tools.
 
 ```sh
 python3 -m venv ~/.local/share/orchard/venv
@@ -37,18 +37,11 @@ Connect the device in DFU mode, then run:
 orchard launch
 ```
 
-The detected device selects its shared launch assets automatically. Pongo and
-m1n1 show a black screen, without distro branding. Recovery discovers compatible
-installed systems; select one and type the requested confirmation to start it.
-This does not download a root image, format storage, or reinstall the system.
-
-`--directory /omarchy` and `--target PARTUUID` optionally filter discovered
-installations. `--manifest PATH_OR_URL` is a development override, not required
-for normal use. Firmware downloads require `--allow-firmware-download` when the
-verified local firmware cache is missing.
-
-The hardware release must publish the device's launch manifest and boot assets;
-see the [launcher build and publication instructions](https://github.com/OrchardLinux/hardware/blob/main/boot/quiet/README.md).
+The host sends only Pongo and the bootloader (m1n1), which ship with Orchard;
+m1n1 reads the boot entries from the device's boot partition and starts the one
+you choose (`--entry ID` picks one without asking). Any computer with Orchard
+can launch any installed system: nothing is downloaded, and nothing from an
+earlier install on that computer is needed. Nothing is formatted or reinstalled.
 
 ## Documentation
 
