@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import uuid
 
-MODES = {0x1227: 'dfu', 0x4141: 'pongo', 0x4142: 'linux'}
+MODES = {0x1227: 'dfu', 0x4141: 'pongo', 0x4142: 'linux', 0x4144: 'ram'}
 
 
 def devices(root=Path('/sys/bus/usb/devices')):
