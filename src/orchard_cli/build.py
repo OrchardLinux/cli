@@ -110,17 +110,32 @@ def kernel_key(hardware, device, base_key):
     return hashlib.sha256((base_key + recipes).encode()).hexdigest()
 
 
+_HELD_LOCKS = set()
+
+
 @contextmanager
 def component_lock(cache):
+    """Exclusive use of a component cache; waits while another process builds.
+
+    The waiting build then finds whatever the other one produced already
+    cached. Taking the lock again in the same process would deadlock on
+    flock, so that is refused as a programming error instead.
+    """
     cache.mkdir(parents=True, exist_ok=True)
-    with (cache / '.lock').open('a') as lock:
+    key = (cache / '.lock').resolve()
+    if key in _HELD_LOCKS:
+        raise ValueError(f'{cache} is already locked by this build')
+    with key.open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ValueError(f'Another build is using {cache}; wait for it to finish') from None
+            print(f'Waiting for another Orchard build to finish with {cache} ...', file=sys.stderr, flush=True)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        _HELD_LOCKS.add(key)
         try:
             yield
         finally:
+            _HELD_LOCKS.discard(key)
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
@@ -187,10 +202,12 @@ def _prepare_kernel(hardware, cache, device):
     platform = kernels.layout(hardware, device)[0]
     base_key = lambda: kernel_base_key(hardware, device, cache)
     def produce_base(stage):
-        kernels.build_base(hardware, cache, device, stage / 'kernel')
+        with kernels.tree_lock(hardware, device):
+            kernels.build_base(hardware, cache, device, stage / 'kernel')
     base = cached_component(components, 'kernel-base-' + platform, base_key, produce_base) / 'kernel'
     def produce_kernel(stage):
-        kernels.build_device(hardware, cache, device, base, stage / 'kernel')
+        with kernels.tree_lock(hardware, device):
+            kernels.build_device(hardware, cache, device, base, stage / 'kernel')
     directory = cached_component(components, 'kernel-' + device,
         lambda: kernel_key(hardware, device, base.parent.name), produce_kernel)
     return directory / 'kernel'

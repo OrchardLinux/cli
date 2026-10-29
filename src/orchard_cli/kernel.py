@@ -5,7 +5,10 @@ staging recipes. Cache policy and module-SDK handling do not live in hardware.
 Hardware builds one kernel per platform (kernel/series/<platform>); a device
 names its platform and DTB in devices/<device>/device.toml.
 """
+from contextlib import contextmanager
+import fcntl
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -37,10 +40,50 @@ def layout(hardware, device):
     return platform, dtb
 
 
+def shared_tree(hardware):
+    """Whether hardware's kernel/build keeps one tree per platform in the Orchard cache."""
+    builder = Path(hardware) / 'kernel/build'
+    return builder.is_file() and '--work-dir' in builder.read_text()
+
+
 def work_directory(hardware, device):
-    # Preserve existing editable source and compiler output; never move/reset it.
-    # These are ignored scratch files, not changes to the hardware repository.
-    return Path(hardware) / 'kernel/.work' / layout(hardware, device)[0]
+    """The incremental kernel tree hardware's kernel/build compiles in.
+
+    Current hardware shares one tree per platform and upstream pin between all
+    checkouts, in the Orchard cache; older hardware keeps it in the checkout.
+    Never move or reset it: it holds editable source and compiler output.
+    """
+    platform = layout(hardware, device)[0]
+    if shared_tree(hardware):
+        return sources.cache_root() / 'kernel-work' / f"{platform}-{pin(hardware)['commit'][:12]}"
+    return Path(hardware) / 'kernel/.work' / platform
+
+
+@contextmanager
+def tree_lock(hardware, device):
+    """Exclusive use of the kernel tree, shared with kernel/build run by anyone.
+
+    kernel/build takes the same lock unless ORCHARD_KERNEL_WORK_LOCKED names
+    its tree, so the CLI holds it across source preparation and the build.
+    """
+    work = work_directory(hardware, device)
+    work.mkdir(parents=True, exist_ok=True)
+    with (work / '.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f'Waiting for another kernel build to finish with {work} ...', file=sys.stderr, flush=True)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        previous = os.environ.get('ORCHARD_KERNEL_WORK_LOCKED')
+        os.environ['ORCHARD_KERNEL_WORK_LOCKED'] = str(work)
+        try:
+            yield work
+        finally:
+            if previous is None:
+                os.environ.pop('ORCHARD_KERNEL_WORK_LOCKED', None)
+            else:
+                os.environ['ORCHARD_KERNEL_WORK_LOCKED'] = previous
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def patch_identity(hardware, device):
@@ -150,7 +193,8 @@ def build_base(hardware, cache, device, output):
     tree = sources.working_tree(source)
     with tempfile.TemporaryDirectory(prefix='base-', dir=work_directory(hardware, device)) as temporary:
         work = Path(temporary)
-        command(hardware / 'kernel/build', device, '--resume', '--output', work / 'full')
+        extra = ['--work-dir', str(work_directory(hardware, device))] if shared_tree(hardware) else []
+        command(hardware / 'kernel/build', device, '--resume', *extra, '--output', work / 'full')
         command(sys.executable, hardware / 'kernel/stage-modules.py',
                 '--build', compiler_output, '--output', work / 'in-tree')
         output.mkdir(parents=True)
