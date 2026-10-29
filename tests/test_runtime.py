@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 import urllib.request
@@ -46,7 +47,7 @@ class Runtime(unittest.TestCase):
              patch.object(boot.shutil, 'which', return_value='/tools/palera1n'), \
              patch.object(adapter_module.usb, 'selected') as selected, \
              patch.object(boot, 'wait_mode') as wait, \
-             patch.object(boot.subprocess, 'run') as bootstrap, \
+             patch.object(boot, 'run_process_group') as bootstrap, \
              patch.object(boot.pongo, 'upload') as upload:
             adapter.boot(device, assets, record, Mock())
             self.assertEqual(bootstrap.call_count, 1)
@@ -61,6 +62,33 @@ class Runtime(unittest.TestCase):
                 adapter.boot(device, assets, record, Mock())
             self.assertEqual(bootstrap.call_count, 2) # one success, one failed call; no retry.
             upload.assert_not_called()
+
+    def test_bootstrap_timeout_stops_spawned_children(self):
+        # palera1n posix_spawns checkra1n; a surviving checkra1n would exploit
+        # the next DFU device behind a later command's back.
+        from orchard_cli.apple import boot
+        pidfile = self.root / 'child.pid'
+        script = f'sleep 300 & echo $! > {pidfile}; wait'
+        with self.assertRaises(subprocess.TimeoutExpired):
+            boot.run_process_group(['sh', '-c', script], timeout=1)
+        child = int(pidfile.read_text())
+        for _ in range(50):
+            try:
+                state = Path(f'/proc/{child}/stat').read_text().rsplit(')', 1)[1].split()[0]
+            except (FileNotFoundError, ProcessLookupError):  # gone mid-read
+                break
+            if state == 'Z':
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(child, 9)
+            self.fail('bootstrap child outlived the timeout')
+
+    def test_bootstrap_failure_is_reported(self):
+        from orchard_cli.apple import boot
+        with self.assertRaises(subprocess.CalledProcessError):
+            boot.run_process_group(['sh', '-c', 'exit 3'], timeout=5)
+        boot.run_process_group(['true'], timeout=5)
 
     def test_manifest_becomes_existing_workflow_inputs(self):
         record, assets = releases.resolve(FIXTURE / 'index.toml', 'j71b')
