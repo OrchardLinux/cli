@@ -1,12 +1,15 @@
 """RAM building/boot tests. Synthetic components; real packer, mocked USB."""
 from contextlib import nullcontext
 import gzip
+import io
 import json
 from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -455,12 +458,32 @@ class RamTests(unittest.TestCase):
                 ram.build_directory(self.base / 'missing-init', hardware=self.hardware)
             components.assert_not_called()
 
-    def test_cache_lock_refuses_concurrent_build(self):
+    def test_cache_lock_refuses_nested_use_in_one_build(self):
         cache = self.base / 'cache'
         with build.component_lock(cache):
             with self.assertRaises(ValueError):
                 with build.component_lock(cache):
                     self.fail('Lock was not held')
+        with build.component_lock(cache):
+            pass
+
+    def test_cache_lock_waits_for_another_build(self):
+        cache = self.base / 'cache'
+        cache.mkdir()
+        holder = subprocess.Popen([sys.executable, '-c', (
+            'import fcntl, sys, time\n'
+            'lock = open(sys.argv[1], "a")\n'
+            'fcntl.flock(lock, fcntl.LOCK_EX)\n'
+            'print("held", flush=True)\n'
+            'time.sleep(1)\n'), str(cache / '.lock')], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.assertEqual(holder.stdout.readline().strip(), 'held')
+        started = time.monotonic()
+        with patch('sys.stderr', new=io.StringIO()) as stderr:
+            with build.component_lock(cache):
+                waited = time.monotonic() - started
+        self.assertGreater(waited, 0.5)
+        self.assertIn('Waiting for another Orchard build', stderr.getvalue())
 
 
 if __name__ == '__main__':

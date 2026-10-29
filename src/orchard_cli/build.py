@@ -110,17 +110,32 @@ def kernel_key(hardware, device, base_key):
     return hashlib.sha256((base_key + recipes).encode()).hexdigest()
 
 
+_HELD_LOCKS = set()
+
+
 @contextmanager
 def component_lock(cache):
+    """Exclusive use of a component cache; waits while another process builds.
+
+    The waiting build then finds whatever the other one produced already
+    cached. Taking the lock again in the same process would deadlock on
+    flock, so that is refused as a programming error instead.
+    """
     cache.mkdir(parents=True, exist_ok=True)
-    with (cache / '.lock').open('a') as lock:
+    key = (cache / '.lock').resolve()
+    if key in _HELD_LOCKS:
+        raise ValueError(f'{cache} is already locked by this build')
+    with key.open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ValueError(f'Another build is using {cache}; wait for it to finish') from None
+            print(f'Waiting for another Orchard build to finish with {cache} ...', file=sys.stderr, flush=True)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        _HELD_LOCKS.add(key)
         try:
             yield
         finally:
+            _HELD_LOCKS.discard(key)
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
