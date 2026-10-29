@@ -65,6 +65,10 @@ def usb_rules(group):
                      f'MODE="0660", GROUP="{group}", TAG+="uaccess"')
     lines.append('SUBSYSTEM=="tty", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="4142", '
                  f'MODE="0660", GROUP="{group}", TAG+="uaccess"')
+    # Let Orchard reset the port of a device in DFU when it does not re-enumerate after checkm8.
+    lines.append('ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="05ac", '
+                 'ATTR{idProduct}=="1227", RUN+="/bin/sh -c \'chgrp '
+                 f'{group} /sys%p/port/disable && chmod g+w /sys%p/port/disable\'"')
     return '\n'.join(lines) + '\n'
 
 

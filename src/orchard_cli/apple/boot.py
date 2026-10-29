@@ -9,7 +9,7 @@ import threading
 
 from orchard_cli.state import DeviceState, private_directory
 from orchard_cli.transports import pongo
-from . import usb
+from . import replug, usb
 
 
 def wait_mode(device, mode, *, chip, board, product, seconds=30):
@@ -88,15 +88,31 @@ def start_pongo(device, image, log, say, *, chip, board, product, seconds=30):
     if not executable:
         raise ValueError('palera1n is required on the host to boot Pongo')
     usb.selected(device['location'], device['ecid'], chip=chip, board=board, mode='dfu')
+    # Resolved while the device is present: its sysfs node goes away after checkm8.
+    control = replug.port_control(device['location'])
     say('Booting Pongo')
-    say('Wait for the Apple logo to appear. If it does not disappear after a few seconds, '
-        'disconnect and reconnect the cable at the device once.')
+    if control:
+        say('Wait for the Apple logo to appear. Orchard resets the USB port if the device does not '
+            'come back; if the logo stays for about 15 seconds, disconnect and reconnect the cable '
+            'at the device once.')
+    else:
+        say('Wait for the Apple logo to appear. If it does not disappear after a few seconds, '
+            'disconnect and reconnect the cable at the device once.')
+    watcher = replug.PortReset(log.name, control) if control else None
+    if watcher:
+        watcher.start()
     try:
         run_process_group([executable, '-p', '-k', str(image)],
                           stdout=log, stderr=subprocess.STDOUT, timeout=120)
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError('Pongo bootstrap failed or outcome unknown; inspect USB before any retry. '
                            f'Log: {log.name}') from error
+    finally:
+        if watcher:
+            watcher.stop()
+            watcher.join()
+    if watcher and watcher.resets:
+        say(f'USB port reset {watcher.resets}x to bring the device back after checkm8')
     return wait_mode(device, 'pongo', chip=chip, board=board, product=product, seconds=seconds)
 
 
