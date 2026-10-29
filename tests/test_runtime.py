@@ -84,6 +84,36 @@ class Runtime(unittest.TestCase):
             os.kill(child, 9)
             self.fail('bootstrap child outlived the timeout')
 
+    def test_bootstrap_sigterm_stops_spawned_children(self):
+        pidfile = self.root / 'child.pid'
+        script = (
+            'import sys\n'
+            'from orchard_cli.apple import boot\n'
+            'boot.run_process_group(["sh", "-c", "sleep 300 & echo $! > " + sys.argv[1] + "; wait"], timeout=60)\n')
+        env = {**os.environ, 'PYTHONPATH': str(CLI / 'src') + os.pathsep + os.environ.get('PYTHONPATH', '')}
+        orchard = subprocess.Popen([sys.executable, '-c', script, str(pidfile)], env=env)
+        try:
+            for _ in range(100):
+                if pidfile.exists() and pidfile.read_text().strip():
+                    break
+                time.sleep(0.05)
+            child = int(pidfile.read_text())
+            orchard.terminate()
+            self.assertEqual(orchard.wait(timeout=10), 128 + 15)
+        finally:
+            orchard.kill()
+        for _ in range(50):
+            try:
+                state = Path(f'/proc/{child}/stat').read_text().rsplit(')', 1)[1].split()[0]
+            except (FileNotFoundError, ProcessLookupError):  # gone mid-read
+                break
+            if state == 'Z':
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(child, 9)
+            self.fail('bootstrap child outlived SIGTERM to Orchard')
+
     def test_bootstrap_failure_is_reported(self):
         from orchard_cli.apple import boot
         with self.assertRaises(subprocess.CalledProcessError):
