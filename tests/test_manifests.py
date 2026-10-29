@@ -29,7 +29,8 @@ class ManifestContracts(unittest.TestCase):
     def test_all_fixtures_validate_with_local_receipts(self):
         paths = list(DISTRO.glob('*.toml')) + list(MINIMAL.glob('*.toml'))
         paths += list((CLI / 'tests/fixtures/developer').glob('*.toml'))
-        paths += [device_path('j71b')]
+        # An installed package may be reached through a virtualenv lib64 link.
+        paths += [device_path('j71b').resolve()]
         for path in paths:
             with self.subTest(path=path):
                 verify_local_receipts(load(path), path.parent)
