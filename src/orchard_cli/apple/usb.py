@@ -80,7 +80,11 @@ def selected(location, ecid, *, chip, board, mode='pongo'):
     if device['location'] != location:
         raise DeviceError('Device moved from the selected USB port')
     if device['mode'] != mode:
-        raise DeviceError(f'Expected {mode} at the selected port; found {device["mode"]}')
+        hint = ''
+        if (mode, device['mode']) == ('dfu', 'pongo'):
+            hint = ('. Another palera1n/checkra1n may have exploited it; stop any running, '
+                    'force-restart the device and enter DFU again')
+        raise DeviceError(f'Expected {mode} at the selected port; found {device["mode"]}{hint}')
     if mode in ('dfu', 'pongo') and (device['ecid'], device['chip'], device['board']) != (ecid, chip, board):
         raise DeviceError('Wrong device identity at the selected port')
     return device
