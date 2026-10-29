@@ -10,7 +10,11 @@ on:
       hardware_tag:
         description: Hardware version to pair with this CLI
         required: true
-        default: v0.1.10
+        default: v0.1.11
+      hardware_repository:
+        description: Repository providing the paired hardware release or workflow artifact
+        required: true
+        default: OrchardLinux/hardware
       hardware_run_id:
         description: Optional hardware workflow run providing the tested wheel before its first release
         required: false
@@ -24,7 +28,8 @@ jobs:
   package:
     runs-on: ubuntu-24.04
     env:
-      HARDWARE_TAG: ${{ inputs.hardware_tag || 'v0.1.10' }}
+      HARDWARE_REPOSITORY: ${{ inputs.hardware_repository || 'OrchardLinux/hardware' }}
+      HARDWARE_TAG: ${{ inputs.hardware_tag || 'v0.1.11' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,23 +37,53 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Read the reviewed PR hardware dependency
+        if: github.event_name == 'pull_request'
+        id: hardware-test
+        run: |
+          python - <<'PYTHON'
+          import json, os, re
+          from pathlib import Path
+          pin = json.loads(Path('ci/hardware-test.json').read_text())
+          assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pin['repository'])
+          assert re.fullmatch(r'[0-9a-f]{40}', pin['ref'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('repository=' + pin['repository'] + '\nref=' + pin['ref'] + '\n')
+          PYTHON
+      - name: Check out the exact hardware candidate for PR tests
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.hardware-test.outputs.repository }}
+          ref: ${{ steps.hardware-test.outputs.ref }}
+          path: out/hardware-source
+          persist-credentials: false
+      - name: Build the pinned hardware candidate wheel
+        if: github.event_name == 'pull_request'
+        env:
+          HARDWARE_REF: ${{ steps.hardware-test.outputs.ref }}
+        run: |
+          test "$(git -C out/hardware-source rev-parse HEAD)" = "$HARDWARE_REF"
+          python -m pip install build
+          python -m build --wheel --outdir "$GITHUB_WORKSPACE/out/hardware" out/hardware-source
       - name: Download pinned released hardware dependency
-        if: inputs.hardware_run_id == ''
+        if: github.event_name != 'pull_request' && inputs.hardware_run_id == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          [[ "$HARDWARE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           [[ "$HARDWARE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           mkdir -p out/hardware
-          gh release download "$HARDWARE_TAG" --repo OrchardLinux/hardware \
+          gh release download "$HARDWARE_TAG" --repo "$HARDWARE_REPOSITORY" \
             --pattern '*.whl' --pattern SHA256SUMS --dir out/hardware
           (cd out/hardware && sha256sum --check --ignore-missing SHA256SUMS)
       - name: Reuse the already-built hardware wheel during first-release bring-up
-        if: inputs.hardware_run_id != ''
+        if: github.event_name != 'pull_request' && inputs.hardware_run_id != ''
         uses: actions/download-artifact@v4
         with:
           name: hardware-packages
           path: out/hardware
-          repository: OrchardLinux/hardware
+          repository: ${{ env.HARDWARE_REPOSITORY }}
           run-id: ${{ inputs.hardware_run_id }}
           github-token: ${{ github.token }}
       - name: Reuse the unchanged CLI distribution
@@ -72,6 +107,7 @@ jobs:
           python -c 'import os, importlib.metadata as m; assert os.environ["HARDWARE_TAG"] == "v" + m.version("orchard-hardware")'
           mkdir -p out/pair
           cp dist/*.whl dist/*.tar.gz out/hardware/*.whl out/pair/
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then cp ci/hardware-test.json out/pair/; fi
       - name: Check tag matches package version
         if: github.ref_type == 'tag'
         env:
@@ -102,6 +138,7 @@ jobs:
           path: out/pair
       - run: python -m pip install out/pair/*.whl && python -m pip check
       - run: python -m unittest discover -s tests -v
+      - run: python -m pip install mypy==1.18.2 && python -m mypy
   assets:
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: test

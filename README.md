@@ -29,6 +29,22 @@ orchard install omarchy-a
 
 The registered name stores a URL. Each resolution fetches the current index; verified images are cached by SHA-256. Publishing a new distro index updates future installations, not an already installed operating system.
 
+## Reset an existing filesystem
+
+During installation, compatible recovery offers **Keep filesystem** (default),
+**Reset filesystem**, or **Cancel** after you select an existing ext4 Linux-data
+partition. Reset removes everything on that partition, including other installation
+directories, personal files and cached images. It creates no backup, keeps the
+partition layout unchanged, and is not secure erasure. Confirm by typing the exact
+`reset <partition ID>` phrase shown by the installer. Installation has its own
+confirmation after reset succeeds.
+
+Older recovery images keep the existing installation workflow without a reset
+option. Reset requires rebuilding installer recovery with the supporting hardware
+runtime; updating the host CLI alone is insufficient. If reset cannot be verified,
+installation stops: do not retry reset automatically. Inspect storage and the saved
+boot-scoped `last-format.json` report first.
+
 ## Launch an installed system
 
 Connect the device in DFU mode, then run:

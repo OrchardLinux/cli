@@ -15,40 +15,67 @@ from .releases import default_manifest, record_launcher, resolve
 from .devices import choose
 
 
-def ask(clock, prompt, input_fn=input):
+def ask(clock, prompt, input_fn=input, *, strip=True):
     with clock.exclude('input'):
-        return input_fn(prompt).strip()
+        answer = input_fn(prompt)
+        return answer.strip() if strip else answer
 
 
-def initialize_partition(client, clock, observation, row, report_path, *, input_fn=input, output=print):
+def initialize_partition(client, clock, observation, row, report_path, *, input_fn=input, output=print, reset=False):
     if report_path is None:
         raise ValueError('Formatting requires a persistent host report path')
     if row['bytes'] < observation['needed_bytes']:
         raise ValueError('Partition is too small for this image; nothing was formatted')
-    output('This Linux-data partition has no recognized filesystem signatures; that does not prove it is empty.')
-    output('Formatting will permanently destroy any contents of this partition. No backup will be created.')
-    phrase = 'format ' + row['id']
-    answer = ask(clock, f'Type "{phrase}" to confirm: ', input_fn)
+    operation = 'reset-target' if reset else 'format-target'
+    if reset:
+        if row['filesystem'] != 'ext4' or not uuid.UUID(row['filesystem_uuid']).int:
+            raise ValueError('Reset requires a verified existing ext4 filesystem')
+        output(f"Reset target: {row['label']} · ID {row['id']} · {row['bytes'] / 1024**3:.1f} GiB · ext4")
+        output('Current filesystem UUID: ' + row['filesystem_uuid'])
+        output('Reset permanently destroys EVERYTHING on this partition: all installations, personal files, and cached images.')
+        output('No backup will be created. Partition boundaries and GPT layout stay unchanged. This is not secure erasure.')
+    else:
+        output('This Linux-data partition has no recognized filesystem signatures; that does not prove it is empty.')
+        output('Formatting will permanently destroy any contents of this partition. No backup will be created.')
+    phrase = ('reset ' if reset else 'format ') + row['id']
+    cancelled = ('Partition formatting was not confirmed; no formatting or reset was performed. '
+                 'Installation did not start.')
+    try:
+        answer = ask(clock, f'Type "{phrase}" to confirm: ', input_fn, strip=not reset)
+    except (EOFError, KeyboardInterrupt) as error:
+        raise ValueError(cancelled) from error
     if answer != phrase:
-        raise ValueError('Partition formatting was not confirmed; no storage changes were made')
+        raise ValueError(cancelled)
     request = {'selection_token': observation['selection_token'], 'target': row['id'],
                'boot_id': observation['boot_id'], 'operation_id': uuid.uuid4().hex, 'confirmation': answer}
+    if reset:
+        request['expected_filesystem_uuid'] = row['filesystem_uuid']
     report = {**request, 'status': 'unknown'}
     # Persist uncertainty before dispatch. A crash or lost SSH result must never
     # turn into an implicit second formatting request.
     save_report(report_path, report)
     try:
-        receipt = client.call('format-target', request, timeout=240)
+        receipt = client.call(operation, request, timeout=240)
         if (receipt.get('status') != 'complete' or receipt.get('filesystem') != 'ext4' or
                 any(receipt.get(key) != request[key] for key in ('boot_id', 'operation_id', 'target')) or
                 not uuid.UUID(receipt['filesystem_uuid']).int):
             raise ValueError('Formatting receipt does not match the request')
+        if reset and (receipt.get('operation') != operation or
+                      receipt.get('previous_filesystem_uuid') != row['filesystem_uuid'] or
+                      receipt['filesystem_uuid'] == row['filesystem_uuid']):
+            raise ValueError('Reset receipt does not match the selected filesystem')
     except BaseException as error:
         save_report(report_path, {**report, 'error': str(error)})
         raise RuntimeError('Formatting outcome could not be verified. Do not retry formatting; '
                            'inspect the partition and saved report: ' + str(report_path)) from error
     save_report(report_path, receipt)
-    refreshed = client.call('targets')
+    if reset:
+        output('Filesystem reset completed; all previous contents on partition ' + row['id'] + ' were destroyed.')
+    try:
+        refreshed = client.call('targets')
+    except (DeviceError, ValueError, OSError, EOFError, KeyboardInterrupt) as error:
+        raise RuntimeError('Formatting completed, but target rediscovery failed; installation stopped. '
+                           'Do not repeat formatting. Inspect the saved report: ' + str(report_path)) from error
     matches = [p for p in refreshed['partitions'] if p['id'] == row['id']]
     if (refreshed['boot_id'] != request['boot_id'] or
             refreshed['selection_token'] == request['selection_token'] or len(matches) != 1 or
@@ -58,7 +85,8 @@ def initialize_partition(client, clock, observation, row, report_path, *, input_
     return refreshed, matches[0]
 
 
-def select_destination(client, clock, *, input_fn=input, output=print, directory='linux', format_report=None):
+def select_destination(client, clock, *, input_fn=input, output=print, directory='linux', format_report=None,
+                       capabilities=()):
     observation = client.call('targets')
     rows = observation['partitions']
     if not rows:
@@ -76,11 +104,40 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
     if not answer.isdecimal() or not 1 <= int(answer) <= len(rows):
         raise ValueError('No valid partition was selected')
     row = rows[int(answer) - 1]
+    reset_completed = False
+    if row['filesystem'] == 'ext4' and 'reset-ext4-v1' in capabilities:
+        output('  1. Keep filesystem (default)')
+        output('  2. Reset filesystem — destroy everything on this partition')
+        output('  3. Cancel')
+        try:
+            action = ask(clock, 'Choose an action [1]: ', input_fn)
+        except (EOFError, KeyboardInterrupt) as error:
+            raise ValueError('Installation cancelled; filesystem was not reset') from error
+        if action == '2':
+            observation, row = initialize_partition(client, clock, observation, row, format_report,
+                                                    input_fn=input_fn, output=output, reset=True)
+            reset_completed = True
+        elif action not in ('', '1'):
+            raise ValueError('Installation cancelled; filesystem was not reset')
     if row['filesystem'] == 'unformatted':
         observation, row = initialize_partition(client, clock, observation, row, format_report,
                                                 input_fn=input_fn, output=output)
     if row['filesystem'] != 'ext4':
         raise ValueError('Selected partition has an unsupported signature; nothing was formatted')
+    try:
+        return select_directory(client, clock, observation, row, directory, input_fn=input_fn, output=output,
+                                reset_completed=reset_completed)
+    except (DeviceError, ValueError, OSError, EOFError, KeyboardInterrupt) as error:
+        if not reset_completed:
+            raise
+        raise RuntimeError('Filesystem reset completed; all previous contents on partition ' + row['id'] +
+                           ' were destroyed. Installation did not complete. ' + str(error) +
+                           '\nDo not repeat reset. Inspect the saved report: ' + str(format_report)) from error
+
+
+def select_directory(client, clock, observation, row, directory, *, input_fn=input, output=print,
+                     reset_completed=False):
+    unchanged = '' if reset_completed else '; nothing was deleted'
     while True:
         request = {'selection_token': observation['selection_token'], 'target': row['id'], 'directory': directory}
         existing = client.call('destination', request)
@@ -95,7 +152,7 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
                 directory = ask(clock, 'New root directory: ', input_fn)
                 continue
             if action != '1':
-                raise ValueError('Installation cancelled; nothing was deleted')
+                raise ValueError('Installation cancelled' + unchanged)
         available = existing['free_bytes'] + (existing['reclaimable_bytes'] if replace else 0)
         needed = existing['needed_bytes']
         output('Installation plan:')
@@ -104,7 +161,7 @@ def select_destination(client, clock, *, input_fn=input, output=print, directory
         output(f'  {label}: {available / 1024**3:.1f} GiB')
         output(f'  Estimated needed, including margin: {needed / 1024**3:.1f} GiB')
         if available < needed or not existing['inodes_sufficient']:
-            raise ValueError('Insufficient space or free inodes; nothing was deleted. '
+            raise ValueError('Insufficient space or free inodes' + unchanged + '. '
                              'Free space or choose another partition or directory.')
         if replace:
             phrase = 'replace ' + directory
@@ -279,7 +336,8 @@ def install(manifest=None, *, input_fn=input, progress=None):
                             source=source, size=mixin_record['bytes'], timeout=180)
             root_path = record.get('default_root', '/linux')
             destination = select_destination(client, clock, input_fn=input_fn, directory=root_path.lstrip('/'),
-                                             format_report=private / 'last-format.json')
+                                             format_report=private / 'last-format.json',
+                                             capabilities=status.get('capabilities', ()))
             progress.phase('Installing ' + record.get('name', 'Linux') + '…')
             with assets['root'].open('rb') as source:
                 result = client.call('install', {**destination, **record['assets']['root']},

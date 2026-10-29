@@ -62,7 +62,7 @@ class HostWorkflow(unittest.TestCase):
         assets.assert_not_called()
 
     def test_guided_run_reaches_desktop_with_one_mixin_and_one_root_stream(self):
-        for filesystem in ('ext4', 'unformatted'):
+        for filesystem in ('ext4', 'unformatted', 'reset'):
             with self.subTest(filesystem=filesystem):
                 self.guided_run(filesystem)
 
@@ -97,7 +97,8 @@ class HostWorkflow(unittest.TestCase):
                 prepared = installed = handed_off = formatted = False
                 def call(self, operation, request=None, **kwargs):
                     if operation == 'status':
-                        return {'release': '1.0', 'boot_id': BOOT, 'ecid':1, 'profile':'device', 'ready': self.handed_off}
+                        return {'release': '1.0', 'boot_id': BOOT, 'ecid':1, 'profile':'device', 'ready': self.handed_off,
+                                'capabilities': ['reset-ext4-v1'] if filesystem == 'reset' else []}
                     if operation == 'prepare':
                         assert not self.prepared and kwargs['source'].read() == b'private-data'
                         self.prepared = True
@@ -106,8 +107,19 @@ class HostWorkflow(unittest.TestCase):
                         return {'selection_token': 'new-token' if self.formatted else 'token',
                                 'boot_id': BOOT, 'needed_bytes': 512 * 1024**2, 'partitions': [
                             {'id': 'target', 'bytes': 16 * 1024**3, 'label': 'Linux',
-                             'filesystem': 'ext4' if self.formatted else filesystem,
-                             'filesystem_uuid': '11111111-1111-4111-8111-111111111111'}]}
+                             'filesystem': 'ext4' if self.formatted or filesystem == 'reset' else filesystem,
+                             'filesystem_uuid': ('11111111-1111-4111-8111-111111111111' if self.formatted else
+                                                 '22222222-2222-4222-8222-222222222222')}]}
+                    if operation == 'reset-target':
+                        assert filesystem == 'reset' and self.prepared and not self.formatted
+                        assert request['confirmation'] == 'reset target'
+                        assert request['expected_filesystem_uuid'] == '22222222-2222-4222-8222-222222222222'
+                        assert json.loads((private / 'last-format.json').read_text())['status'] == 'unknown'
+                        self.formatted = True
+                        return {**{k: request[k] for k in ('boot_id', 'operation_id', 'target')},
+                                'operation': operation, 'previous_filesystem_uuid': request['expected_filesystem_uuid'],
+                                'status': 'complete', 'filesystem': 'ext4',
+                                'filesystem_uuid': '11111111-1111-4111-8111-111111111111'}
                     if operation == 'format-target':
                         assert self.prepared and not self.formatted and filesystem == 'unformatted'
                         saved = json.loads((private / 'last-format.json').read_text())
@@ -131,7 +143,8 @@ class HostWorkflow(unittest.TestCase):
                         return {'requested': True}
                     raise AssertionError(operation)
             device = Device()
-            answers = iter(('y', '', *(['format target'] if filesystem == 'unformatted' else []),
+            answers = iter(('y', '', *(['format target'] if filesystem == 'unformatted' else
+                                              ['2', 'reset target'] if filesystem == 'reset' else []),
                             'install linux', 'y'))
             record = {'release': '1.0', 'assets': {'root': {'bytes': 11, 'sha256': 'root-digest'}}}
             def acquire_assets(*args, **kwargs):
@@ -153,7 +166,7 @@ class HostWorkflow(unittest.TestCase):
                 result = install(input_fn=lambda _: next(answers), progress=Progress(io.StringIO()))
             self.assertTrue(result['ready'])
             self.assertTrue(device.handed_off)
-            self.assertEqual(device.formatted, filesystem == 'unformatted')
+            self.assertEqual(device.formatted, filesystem in ('unformatted', 'reset'))
             if device.formatted:
                 self.assertEqual(json.loads((private / 'last-format.json').read_text())['status'], 'complete')
             receipt = private / 'last-install.json'
@@ -354,6 +367,16 @@ class HostWorkflow(unittest.TestCase):
             client = Client(Connection([sys.executable, '-c', program], SCOPE, lambda: None), Progress(io.StringIO()))
             with self.assertRaisesRegex(DeviceError, 'integrity mismatch'):
                 client.call('install', source=io.BytesIO(b'archive'), size=7, timeout=5)
+            self.assertEqual(marker.read_text(), 'x')
+
+    def test_reset_protocol_failure_warns_unknown_without_retransmission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'attempts'
+            program = ('import sys,pathlib; p=pathlib.Path(' + repr(str(marker)) + '); '
+                       'p.write_text(p.read_text()+"x" if p.exists() else "x"); sys.exit(1)')
+            client = Client(Connection([sys.executable, '-c', program], SCOPE, lambda: None), Progress(io.StringIO()))
+            with self.assertRaisesRegex(DeviceError, 'outcome is unknown; do not retry reset'):
+                client.call('reset-target', {}, timeout=5)
             self.assertEqual(marker.read_text(), 'x')
 
     def test_reported_handoff_failure_stops_without_a_readiness_wait(self):

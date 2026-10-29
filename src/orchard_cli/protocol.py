@@ -21,7 +21,7 @@ class Client:
         self.ssh, self.progress = connection.argv, progress
 
     def call(self, operation, request=None, *, source=None, size=0, timeout=120):
-        if operation not in ('status', 'prepare', 'targets', 'destination', 'install', 'handoff', 'diagnostics', 'abort', 'bootstrap', 'revoke-ssh', 'format-target', 'installations', 'launch'):
+        if operation not in ('status', 'prepare', 'targets', 'destination', 'install', 'handoff', 'diagnostics', 'abort', 'bootstrap', 'revoke-ssh', 'format-target', 'reset-target', 'installations', 'launch'):
             raise ValueError('Unsupported phase operation')
         try:
             self.connection.check()
@@ -95,7 +95,9 @@ class Client:
         if (timed_out.is_set() or code or errors or len(records) != 1 or
                 (records and records[0].get('operation') != operation)):
             detail = '; '.join(errors) or b''.join(stderr).decode(errors='replace')[-2000:]
-            if operation in ('prepare', 'install', 'handoff', 'abort', 'format-target') and 'orchard install' not in detail:
+            if operation == 'reset-target':
+                detail += '\nReset outcome is unknown; do not retry reset. Inspect storage and the saved formatting report.'
+            elif operation in ('prepare', 'install', 'handoff', 'abort', 'format-target') and 'orchard install' not in detail:
                 detail += '\nA fresh recovery boot is required; then run: orchard install'
             raise DeviceError(f'{operation} failed. {detail}', reported=bool(errors))
         return records[0]['result']

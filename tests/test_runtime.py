@@ -250,7 +250,7 @@ def guard(event, args):
 
 sys.addaudithook(guard)
 from orchard_cli.command import main
-sys.argv = ['orchard', 'resolve', INPUT]
+sys.argv = ['orchard', 'resolve', INPUT, '--profile', 'j71b']
 main()
 '''.replace('BLOCKED', repr([str(path) for path in blocked])).replace('INPUT', repr(str(inputs / 'index.toml')))
         env = {**os.environ, 'ORCHARD_HOME': str(self.root / 'isolated-store'), 'PYTHONDONTWRITEBYTECODE': '1'}
