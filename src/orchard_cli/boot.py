@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 
+from .apple.boot import run_process_group
 from .ram import verify_ram
 
 
@@ -67,8 +68,8 @@ def boot_ram(output, *, yes=False):
         if device['mode'] == 'dfu':
             print('Starting Pongo once. Inspect any uncertain failure before retrying.')
             with (output / 'palera1n.log').open('wb') as log:
-                subprocess.run([executable, '-p', '-k', str(output / 'pongo.bin')],
-                               check=True, timeout=120, stdout=log, stderr=subprocess.STDOUT)
+                run_process_group([executable, '-p', '-k', str(output / 'pongo.bin')],
+                                  timeout=120, stdout=log, stderr=subprocess.STDOUT)
             wait_mode(device, 'pongo', chip=chip, board=board, product='', seconds=60)
         usb.selected(device['location'], ecid, chip=chip, board=board)
         pongo.upload(output / 'linux.bin', device['location'], receipt['files']['linux.bin'])

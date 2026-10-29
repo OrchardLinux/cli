@@ -331,7 +331,7 @@ class RamTests(unittest.TestCase):
                 patch('orchard_cli.state.operation_lock', return_value=nullcontext()), \
                 patch('orchard_cli.apple.boot.wait_mode') as wait, \
                 patch.object(boot.shutil, 'which', return_value='/fake/palera1n'), \
-                patch.object(boot.subprocess, 'run') as execute:
+                patch.object(boot, 'run_process_group') as execute:
             boot.boot_ram(self.output, yes=True)
         selected.assert_any_call('fake', 123, chip=0x8011, board=0x04, mode='dfu')
         selected.assert_any_call('fake', 123, chip=0x8011, board=0x04)
