@@ -51,17 +51,6 @@ class Device:
         return ssh.session(DeviceState(self.PROFILE, device['ecid']), self.recovery_endpoint,
                            expected_boot=device.get('boot_id'))
 
-    def connect_saved(self, device: SelectedDevice) -> AbstractContextManager[Connection]:
-        if device['mode'] != 'linux' or not device.get('boot_id'):
-            raise ValueError('Diagnostic access requires the selected running Linux boot')
-        return ssh.saved_session(DeviceState(self.PROFILE, device['ecid']), self.recovery_endpoint,
-                                 expected_boot=device['boot_id'])
-
-    def forget_access(self, scope: BootState) -> None:
-        if scope.device.profile != self.PROFILE:
-            raise ValueError('Credential scope differs from adapter profile')
-        return ssh.forget_access(scope)
-
     def capture_adt(self, device: Optional[SelectedDevice] = None) -> bytes:
         # Bring-up and diagnostics only; installs do not need the ADT.
         # DFU/Pongo and Linux location IDs differ: bind the fresh ADT to the ECID.

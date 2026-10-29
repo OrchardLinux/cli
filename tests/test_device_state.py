@@ -1,6 +1,4 @@
 """Sequential devices/boots never share credentials, reports or active operations."""
-import io
-import json
 import os
 import plistlib
 from pathlib import Path
@@ -29,52 +27,15 @@ class DeviceIsolation(unittest.TestCase):
         scoped.start()
         self.addCleanup(scoped.stop)
 
-    def seed(self, scope):
-        access = private_directory(scope.root / 'access')
-        values = {'profile':scope.device.profile, 'ecid':scope.device.ecid, 'boot_id':scope.boot_id,
-                  'host':'172.16.42.1', 'port':22}
-        for name, content in (('identity', str(scope.device.ecid)), ('known_hosts', 'pinned'),
-                              ('endpoint.json', json.dumps(values))):
-            (access / name).write_text(content)
-            (access / name).chmod(0o600)
-        (scope.root / 'last-install.json').write_text('receipt')
-        return access
-
-    def test_two_devices_and_two_boots_have_distinct_private_state(self):
-        scopes = [BootState(DeviceState('j71b', 1), BOOT_A),
-                  BootState(DeviceState('j71b', 2), BOOT_A),
-                  BootState(DeviceState('j71b', 1), BOOT_B)]
-        paths = [self.seed(scope) for scope in scopes]
-        self.assertEqual(len(set(paths)), 3)
-        ssh.forget_access(scopes[0])
-        self.assertFalse(paths[0].exists())
-        self.assertTrue(all(path.exists() for path in paths[1:]))
-        self.assertTrue(all((scope.root / 'last-install.json').exists() for scope in scopes))
-
-    def test_new_boot_cannot_fall_back_to_old_credentials_or_profile_cache(self):
-        old = BootState(DeviceState('j71b',1), BOOT_A)
-        access = self.seed(old)
-        endpoint = {'ecid':1,'boot_id':BOOT_B,'location':'same-port','serial_port':'serial'}
-        legacy = self.root / 'private/j71b/access'
-        legacy.mkdir(parents=True)
-        (legacy / 'identity').write_text('must not be tried')
-        with patch.object(ssh,'verify_peer') as peer:
-            with self.assertRaisesRegex(ValueError,'No retained'):
-                with ssh.saved_session(old.device,lambda:endpoint,expected_boot=BOOT_B):
-                    self.fail('Expired credentials were reused')
-            peer.assert_not_called()
-        self.assertTrue(access.exists())
-        self.assertTrue((legacy / 'identity').exists())
-
     def test_changed_identity_or_extra_target_stops_before_rpc_dispatch(self):
         scope = BootState(DeviceState('j71b',1), BOOT_A)
         endpoint = {'ecid':1,'boot_id':BOOT_A,'location':'port','serial_port':'serial'}
         selected = Mock(return_value={**endpoint,'ecid':2})
         connection = Connection(['ssh'],scope,ssh.endpoint_check(scope,endpoint,selected))
         client = Client(connection,Mock())
-        with patch('orchard_cli.protocol.subprocess.Popen') as launch:
+        with patch('orchard_cli.protocol.subprocess.run') as launch:
             with self.assertRaisesRegex(ValueError,'changed'):
-                client.call('install')
+                client.call('status')
             launch.assert_not_called()
         for devices in ([{'mode':'linux'}, {'mode':'dfu'}], [{'mode':'pongo'}, {'mode':'pongo'}]):
             with patch.object(usb,'devices',return_value=devices), self.assertRaisesRegex(ValueError,'exactly one'):
@@ -83,7 +44,7 @@ class DeviceIsolation(unittest.TestCase):
     def test_temporary_absence_is_readiness_pollable_but_identity_change_is_not(self):
         check = Mock(side_effect=EndpointUnavailable('not connected'))
         client = Client(Connection(['ssh'],BootState(DeviceState('j71b',1),BOOT_A),check),Mock())
-        with patch('orchard_cli.protocol.subprocess.Popen') as launch:
+        with patch('orchard_cli.protocol.subprocess.run') as launch:
             with self.assertRaises(DeviceError):
                 client.call('status')
             launch.assert_not_called()

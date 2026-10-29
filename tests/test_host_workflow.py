@@ -169,18 +169,15 @@ class HostWorkflow(unittest.TestCase):
             adapter.boot(device, {}, {}, Mock())
             upload.assert_not_called()
 
-    def test_protocol_stream_reports_device_failure_without_retransmission(self):
-        with tempfile.TemporaryDirectory() as directory:
-            marker = Path(directory) / 'attempts'
-            program = ('import sys,json,pathlib; p=pathlib.Path(' + repr(str(marker)) + '); '
-                       'p.write_text(p.read_text()+"x" if p.exists() else "x"); '
-                       'sys.stdin.buffer.read(); '
-                       'print(json.dumps({"protocol":1,"event":"error","message":"integrity mismatch"})); '
-                       'sys.exit(1)')
-            client = Client(Connection([sys.executable, '-c', program], SCOPE, lambda: None), Progress(io.StringIO()))
-            with self.assertRaisesRegex(DeviceError, 'integrity mismatch'):
-                client.call('install', source=io.BytesIO(b'archive'), size=7, timeout=5)
-            self.assertEqual(marker.read_text(), 'x')
+    def test_protocol_reports_device_errors_and_allows_only_status(self):
+        program = ('import json,sys; '
+                   'print(json.dumps({"protocol":1,"event":"error","message":"identity unavailable"})); '
+                   'sys.exit(1)')
+        client = Client(Connection([sys.executable, '-c', program], SCOPE, lambda: None), Progress(io.StringIO()))
+        with self.assertRaisesRegex(DeviceError, 'identity unavailable'):
+            client.call('status', timeout=5)
+        with self.assertRaisesRegex(ValueError, 'Unsupported'):
+            client.call('install')
 
     def test_protocol_rejects_incompatible_responses(self):
         program = 'print(\'{"protocol":2,"event":"result","result":{}}\')'

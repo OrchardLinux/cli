@@ -1,11 +1,10 @@
-"""Serial-pinned SSH transport; RAM key/service management is runtime-owned."""
+"""Serial-pinned SSH transport to the recovery; the key lives only for this session."""
 import base64
 from contextlib import contextmanager
 import ipaddress
 import json
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -136,58 +135,5 @@ def session(device: DeviceState, select_endpoint, *, expected_boot=None):
         wait_authenticated(argv, check)
         connection = Connection(argv, scope, check)
         verify_peer(connection)
-        saved = private_directory(scope.root / 'access')
-        for source, name in ((identity, 'identity'), (hosts, 'known_hosts')):
-            target = saved / name
-            if target.is_symlink():
-                raise ValueError('Linked credential cache refused')
-            shutil.copyfile(source, target)
-            target.chmod(0o600)
-        metadata = saved / 'endpoint.json'
-        if metadata.is_symlink():
-            raise ValueError('Linked credential cache refused')
-        metadata.write_text(json.dumps({'profile': device.profile, 'ecid': device.ecid,
-                                       'boot_id': scope.boot_id, 'host': host, 'port': ssh_port}))
-        metadata.chmod(0o600)
         yield connection
 
-
-def forget_access(scope: BootState):
-    """Remove only the selected device/boot's credentials after verified retirement."""
-    saved = private_directory(scope.root) / 'access'
-    if saved.is_symlink():
-        raise ValueError('Linked credential cache refused')
-    for name in ('identity', 'known_hosts', 'endpoint.json'):
-        (saved / name).unlink(missing_ok=True)
-    if saved.exists():
-        saved.rmdir()
-
-
-@contextmanager
-def saved_session(device: DeviceState, select_endpoint, *, expected_boot):
-    """Find one exact device/boot record; never scan keys or reprovision."""
-    endpoint_device = select_endpoint()
-    scope = BootState(device, expected_boot)
-    if not scope.matches(endpoint_device):
-        raise ValueError('Diagnostic identity differs from the selected device/boot')
-    check = endpoint_check(scope, endpoint_device, select_endpoint)
-    saved = private_directory(scope.root) / 'access'
-    if saved.is_symlink():
-        raise ValueError('Linked credential cache refused')
-    if not saved.is_dir():
-        raise ValueError('No retained diagnostic SSH access for this device/boot. '
-                         'Start a fresh recovery if needed.')
-    for name in ('identity', 'known_hosts', 'endpoint.json'):
-        path = saved / name
-        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
-            raise ValueError('Diagnostic credential is missing or not private')
-    endpoint = json.loads((saved / 'endpoint.json').read_text())
-    if not scope.matches(endpoint) or endpoint.get('profile') != device.profile:
-        raise ValueError('Saved diagnostic identity differs')
-    host = str(ipaddress.IPv4Address(endpoint['host']))
-    port = endpoint['port']
-    if type(port) is not int or not 0 < port < 65536:
-        raise ValueError('Invalid cached SSH endpoint')
-    connection = Connection(ssh_argv(saved / 'identity', saved / 'known_hosts', host, port, timeout=3), scope, check)
-    verify_peer(connection)
-    yield connection

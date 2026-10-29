@@ -72,7 +72,7 @@ class Adapter(Protocol):
 
     Discovery is read-only and raises ValueError when no unique supported device
     is present. Boot must never retry uncertain mutations. connect(device) binds
-    the selected ECID/boot; connect_saved(device) must never reprovision.
+    the selected ECID/boot.
     Exceptions propagate: the host owns confirmation/reporting, not recovery
     recipes. There are no optional members or legacy fallbacks.
     """
@@ -102,10 +102,6 @@ class Adapter(Protocol):
                      manifest: BootRequest, progress: Progress) -> str: ...
 
     def connect(self, device: SelectedDevice) -> AbstractContextManager[Connection]: ...
-
-    def connect_saved(self, device: SelectedDevice) -> AbstractContextManager[Connection]: ...
-
-    def forget_access(self, scope: BootState) -> None: ...
 
     def capture_adt(self, device: Optional[SelectedDevice] = None) -> bytes: ...
 

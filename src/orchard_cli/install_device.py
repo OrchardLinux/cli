@@ -46,6 +46,11 @@ XBOOTLDR = 'bc13c2ff-59e6-4262-a352-b275fd6f7172'
 ROOT_ARM64 = 'b921b045-1df0-41c3-af44-4c6f280d3fae'
 DEFAULT_DISK = '/dev/nvme0n1'
 SECRETS = Path('/run/orchard/secrets.json')
+# The recovery loads NVMe at boot and fences it read-only in the background
+# (hardware's storage-fence), then leaves one of these markers.
+STORAGE_FENCE = Path('/usr/libexec/orchard/storage-fence')
+STORAGE_READY = Path('/run/orchard/storage-ready')
+STORAGE_FAILED = Path('/run/orchard/storage-failed')
 
 PIN_CHECK = r'''#!/bin/sh
 # Lock-screen PIN check for the orchard-pin PAM service (pam_exec expose_authtok).
@@ -168,6 +173,20 @@ def check_quiet(disk, partitions):
 
 
 # --- inspect -----------------------------------------------------------------
+
+def wait_for_storage(seconds=60):
+    """On the recovery, wait until its storage fence has finished; elsewhere (tests) there is none."""
+    if not STORAGE_FENCE.exists():
+        return
+    deadline = time.monotonic() + seconds
+    while not STORAGE_READY.exists():
+        if STORAGE_FAILED.exists():
+            raise InstallError('storage-unavailable', 'Storage did not come up: ' +
+                               STORAGE_FAILED.read_text(errors='replace').strip())
+        if time.monotonic() >= deadline:
+            raise InstallError('storage-unavailable', f'Storage was not ready after {seconds} s')
+        time.sleep(0.5)
+
 
 def inspect(disk):
     info, partitions, free = read_gpt(disk)
@@ -650,8 +669,10 @@ def main(argv):
     disk = os.environ.get('ORCHARD_INSTALL_DISK', DEFAULT_DISK)
     try:
         if argv[1:] == ['inspect']:
+            wait_for_storage()
             inspect(disk)
         elif len(argv) == 3 and argv[1] == 'run':
+            wait_for_storage()
             install(json.loads(Path(argv[2]).read_text()), sys.stdin.buffer)
         else:
             raise InstallError('usage', 'usage: install_device.py inspect | run PLAN.json < ROOT')
