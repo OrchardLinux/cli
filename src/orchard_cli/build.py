@@ -225,10 +225,33 @@ def prepare_kernel(hardware=None, cache=None, *, device):
         return _prepare_kernel(hardware, cache, device)
 
 
-
 def has_loader_patches(hardware):
     """Hardware keeps its m1n1 patches in ordered layers under boot/m1n1/patches/."""
     return any((Path(hardware) / 'boot/m1n1/patches').rglob('*.patch'))
+
+
+def _prepare_tools(hardware, components):
+    """The hardware's static recovery tools (BusyBox, Dropbear, Wi-Fi tools). Caller holds the lock."""
+    def produce_tools(stage):
+        work = hardware / '.work/tools'
+        work = work / recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py'])
+        if not (work / 'bin/busybox').exists():
+            command(hardware / 'boot/initramfs/recovery/build-tools',
+                    env={**os.environ, 'OMA_RECOVERY_TOOLS_WORK': str(work)})
+        for tool in (work / 'bin').iterdir():
+            if tool.is_file() and not tool.is_symlink():
+                shutil.copyfile(tool, stage / tool.name)
+                (stage / tool.name).chmod(0o755)
+    return cached_component(components, 'recovery-tools',
+        lambda: recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py']), produce_tools)
+
+
+def prepare_tools(hardware=None, cache=None, *, device):
+    """The directory of static recovery tools for RAM images, built or reused."""
+    hardware, cache = _build_context(hardware, cache, device)
+    with component_lock(cache):
+        return _prepare_tools(hardware, cache / 'components-v2')
+
 
 def prepare_components(hardware=None, cache=None, *, device, kernel=None,
                        busybox=None, loader=None, pongo=None):
@@ -261,16 +284,7 @@ def prepare_components(hardware=None, cache=None, *, device, kernel=None,
         if kernel is None:
             kernel = _prepare_kernel(hardware, cache, device)
         if busybox is None:
-            def produce_tools(stage):
-                work = hardware / '.work/tools'
-                work = work / recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py'])
-                if not (work / 'bin/busybox').exists():
-                    command(hardware / 'boot/initramfs/recovery/build-tools',
-                            env={**os.environ, 'OMA_RECOVERY_TOOLS_WORK': str(work)})
-                shutil.copyfile(work / 'bin/busybox', stage / 'busybox')
-            directory = cached_component(components, 'busybox',
-                lambda: recipe_key(hardware, ['boot/initramfs/recovery', 'buildenv.py']), produce_tools)
-            busybox = directory / 'busybox'
+            busybox = _prepare_tools(hardware, components) / 'busybox'
         if loader is None:
             def produce_loader(stage):
                 argv = [hardware / 'boot/m1n1/build', device, '--output', stage / 'm1n1.bin']

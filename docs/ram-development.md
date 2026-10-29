@@ -28,9 +28,13 @@ relative paths inside the RAM filesystem and retain their permissions. No
 `build.py`, `run.py`, registration or manifest language is needed. Symlinks in the
 CLI's `rootfs/` input are currently rejected, not silently dereferenced.
 
-The CLI supplies BusyBox, the device kernel and boot framing, then writes artifacts
-to `DIRECTORY/out/`. Modules are omitted by default; `--modules` includes matching
-modules for manual use without automatically loading them. Component override
+The CLI supplies BusyBox, the hardware's other static tools (Dropbear, and
+`wpa_supplicant`, `wpa_cli` and `iw` for Wi-Fi), the device kernel and boot
+framing, then writes artifacts to `DIRECTORY/out/`. Modules are omitted by default;
+`--modules` includes matching modules for manual use without automatically loading
+them. Firmware is omitted by default; `--firmware` includes every output of the
+device's firmware recipe at its destination (`lib/firmware/…`), produced and cached
+as the installer does: the first build downloads the device's IPSW. Component override
 flags: `--hardware`, `--cache`, `--kernel-dir`, `--busybox`, `--loader`, `--pongo`.
 No parent-directory layout is required: `examples/`, `use_cases/`, a deeply nested
 folder or an unrelated absolute path all work. Hardware resources come from the

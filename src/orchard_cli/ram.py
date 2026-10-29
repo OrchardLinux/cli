@@ -94,8 +94,13 @@ def assemble_ram(hardware, output, *, kernel, busybox, loader, pongo, init,
     return output
 
 
+# Where the hardware's static tools go in a RAM image; others land in usr/bin.
+TOOL_DESTINATIONS = {'dropbear': 'usr/sbin', 'wpa_supplicant': 'usr/sbin', 'iw': 'usr/sbin'}
+
+
 def build_directory(directory, *, hardware=None, cache=None, kernel=None,
-                    busybox=None, loader=None, pongo=None, modules=False, device=None):
+                    busybox=None, loader=None, pongo=None, modules=False, device=None,
+                    firmware=False):
     """Build any DIRECTORY/init plus optional DIRECTORY/rootfs/; no layout convention."""
     directory = Path(directory).expanduser().resolve()
     device = device if device is not None else build.configured_device(directory)
@@ -122,6 +127,19 @@ def build_directory(directory, *, hardware=None, cache=None, kernel=None,
             raise ValueError(f'Symlinks in rootfs are not supported yet: {path}')
         if path.is_file():
             files[str(path.relative_to(overlay))] = path
+    tools = build.prepare_tools(hardware, cache, device=device)
+    for tool in sorted(tools.iterdir()):
+        if tool.name != 'busybox' and tool.is_file():
+            files.setdefault(TOOL_DESTINATIONS.get(tool.name, 'usr/bin') + '/' + tool.name, tool)
+    if firmware:
+        from . import firmware as firmwares
+        from .progress import Clock, Progress
+        recipe = firmwares.recipe_for(device, hardware)
+        outputs = firmwares.ensure(device, Clock(), Progress(), hardware=hardware)
+        for item in recipe['outputs']:
+            if item['destination'] in files:
+                raise ValueError(f'rootfs/ and the {device} firmware both provide {item["destination"]}')
+            files[item['destination']] = outputs / item['sha256']
     components = build.prepare_components(hardware, cache, device=device, kernel=kernel,
                                           busybox=busybox, loader=loader, pongo=pongo)
     hostname = re.sub(r'[^A-Za-z0-9_-]', '-', directory.name).strip('-_')[:63] or 'orchard-ram'

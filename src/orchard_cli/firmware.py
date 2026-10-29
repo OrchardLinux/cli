@@ -78,19 +78,37 @@ def pack_mixin(prepared, metadata, outdir):
     return archive, record
 
 
-def recipe_for(profile):
-    """The installed hardware's firmware recipe for a device, validated and supported."""
-    from orchard_hardware import firmware_path
-    return recipes.check(json.loads(firmware_path(profile).read_text()))
+def recipe_for(profile, hardware=None):
+    """A device's firmware recipe, validated and supported.
+
+    From the installed hardware package, or from the hardware checkout at
+    HARDWARE (a development build against another branch).
+    """
+    if hardware is None:
+        from orchard_hardware import firmware_path
+        return recipes.check(json.loads(firmware_path(profile).read_text()))
+    from .build import tomllib
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', profile):
+        raise ValueError('Invalid device profile')
+    descriptor = Path(hardware) / 'devices' / profile / 'device.toml'
+    with descriptor.open('rb') as stream:
+        name = tomllib.load(stream)['firmware']['recipe']
+    parts = name.split('/')
+    if '\\' in name or ':' in name or any(part in ('', '.', '..') for part in parts):
+        raise ValueError('Unsafe firmware recipe resource')
+    path = descriptor.parent.joinpath(*parts)
+    if any(p.is_symlink() for p in (path, *path.parents) if descriptor.parent in (p, *p.parents)):
+        raise ValueError('Firmware recipe path contains a symlink')
+    return recipes.check(json.loads(path.read_text()))
 
 
-def ensure(profile, clock, progress, *, allow_download=True):
+def ensure(profile, clock, progress, *, allow_download=True, hardware=None):
     """Every firmware output of the device's recipe, verified and cached by hash.
 
     Only missing outputs are produced, from only the IPSW inputs they need.
     Returns the directory holding the outputs, named by their sha256.
     """
-    recipe = recipe_for(profile)
+    recipe = recipe_for(profile, hardware)
     root = cache_root() / 'firmware' / profile
     outputs = root / 'outputs'
     outputs.mkdir(parents=True, exist_ok=True, mode=0o700)

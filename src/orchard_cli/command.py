@@ -32,6 +32,8 @@ def main():
     for component in ('pongo', 'busybox', 'loader'):
         build.add_argument('--' + component, type=Path, help='reuse this local component')
     build.add_argument('--modules', action='store_true', help='include matching modules for manual use; does not load them')
+    build.add_argument('--firmware', action='store_true',
+                       help="include the device's firmware from its recipe (downloads the IPSW once, then cached)")
     run = commands.add_parser('run', help='boot the last successful RAM payload for DIRECTORY')
     run.add_argument('directory', type=Path, help='any directory whose out/ contains the built payload')
     run.add_argument('-y', '--yes', action='store_true',
@@ -87,7 +89,8 @@ def main():
             from orchard_cli.ram import build_directory
             build_directory(args.directory, hardware=args.hardware, cache=args.cache,
                             kernel=args.kernel_dir, busybox=args.busybox, loader=args.loader,
-                            pongo=args.pongo, modules=args.modules, device=args.device)
+                            pongo=args.pongo, modules=args.modules, device=args.device,
+                            firmware=args.firmware)
             return
         if args.action == 'run':
             from orchard_cli.boot import run_directory
