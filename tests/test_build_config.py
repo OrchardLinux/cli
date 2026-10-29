@@ -66,3 +66,13 @@ class BuildConfigTests(unittest.TestCase):
                 prompt.assert_not_called()
                 download.assert_not_called()
                 boot.assert_not_called()
+
+
+class LoaderPatchLayout(unittest.TestCase):
+    def test_layered_m1n1_patches_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hardware = Path(directory)
+            (hardware / 'boot/m1n1/patches/orchard').mkdir(parents=True)
+            self.assertFalse(build.has_loader_patches(hardware))
+            (hardware / 'boot/m1n1/patches/orchard/0001-fill-in.patch').write_text('')
+            self.assertTrue(build.has_loader_patches(hardware))

@@ -208,6 +208,11 @@ def prepare_kernel(hardware=None, cache=None, *, device):
         return _prepare_kernel(hardware, cache, device)
 
 
+
+def has_loader_patches(hardware):
+    """Hardware keeps its m1n1 patches in ordered layers under boot/m1n1/patches/."""
+    return any((Path(hardware) / 'boot/m1n1/patches').rglob('*.patch'))
+
 def prepare_components(hardware=None, cache=None, *, device, kernel=None,
                        busybox=None, loader=None, pongo=None):
     """Build/reuse components shared by experiments and larger images.
@@ -220,8 +225,7 @@ def prepare_components(hardware=None, cache=None, *, device, kernel=None,
     components = cache / 'components-v2'
     if kernel is None:
         _check_kernel_recipe(hardware, device)
-    if loader is None and not any([*(hardware / 'boot/m1n1/patches').glob('*.patch'),
-                                   *(hardware / 'boot/m1n1/patches' / device).glob('*.patch')]):
+    if loader is None and not has_loader_patches(hardware):
         raise ValueError(f'Missing loader patches for {device}; add a loader recipe or supply --loader FILE')
     with component_lock(cache):
         if pongo is None:
