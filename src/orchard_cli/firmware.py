@@ -2,11 +2,17 @@
 import hashlib
 import io
 import json
+from pathlib import Path, PurePosixPath
+import re
 import shutil
 import tarfile
+import tempfile
+import zipfile
 
+from .cache import cache_root
 from .downloads import download
 from .integrity import digest
+from . import recipe as recipes
 
 
 def missing_inputs(locations, expected):
@@ -70,3 +76,84 @@ def pack_mixin(prepared, metadata, outdir):
     (outdir / 'mixin.json').write_text(json.dumps(record, indent=2) + '\n')
     (outdir / 'mixin.json').chmod(0o600)
     return archive, record
+
+
+def recipe_for(profile):
+    """The installed hardware's firmware recipe for a device, validated and supported."""
+    from orchard_hardware import firmware_path
+    return recipes.check(json.loads(firmware_path(profile).read_text()))
+
+
+def ensure(profile, clock, progress, *, allow_download=True):
+    """Every firmware output of the device's recipe, verified and cached by hash.
+
+    Only missing outputs are produced, from only the IPSW inputs they need.
+    Returns the directory holding the outputs, named by their sha256.
+    """
+    recipe = recipe_for(profile)
+    root = cache_root() / 'firmware' / profile
+    outputs = root / 'outputs'
+    outputs.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    expected = {o['sha256']: o['sha256'] for o in recipe['outputs']}
+    absent = set(missing_inputs({sha: outputs / sha for sha in expected}, expected))
+    missing = [o for o in recipe['outputs'] if o['sha256'] in absent]
+    if not missing:
+        progress.phase('Verified cached firmware')
+        return outputs
+    if not allow_download:
+        raise ValueError('Verified private firmware cache is missing. Launch does not download an IPSW by default; '
+                         'explicitly use --allow-firmware-download to acquire it.')
+    source = recipe['ipsw']
+    archive = ensure_archive(source['url'], source['bytes'], source['sha256'],
+                             root / 'archive' / (source['sha256'] + '.ipsw'),
+                             clock, progress, label='Apple IPSW')
+    from .apple import ipsw
+    progress.phase('Extracting firmware…')
+    with tempfile.TemporaryDirectory(prefix='extract-', dir=root) as directory:
+        executable = []
+
+        def read_input(name):
+            entry = recipe['inputs'][name]
+            location = entry['ipsw']
+            if 'zip' in location:
+                with zipfile.ZipFile(archive) as bundle:
+                    return bundle.read(location['zip'])
+            if not executable:
+                executable.append(ipsw.tool(clock, progress))
+            target = Path(directory) / name
+            target.mkdir()
+            if 'kernelcache' in location:
+                return ipsw.extract_kernel(executable[0], archive, recipe['device'], target)
+            ipsw.extract_files(executable[0], archive, (re.escape(location['rootfs']) + '$',), target)
+            leaf = PurePosixPath(location['rootfs']).name
+            matches = [p for p in target.rglob(leaf) if p.is_file() and not p.is_symlink() and
+                       (not entry.get('sha256') or digest(p) == entry['sha256'])]
+            if len(matches) != 1:
+                raise ValueError('Expected one extracted firmware input: ' + name)
+            return matches[0].read_bytes()
+
+        for destination, data in recipes.run(recipe, read_input, missing).items():
+            checksum = next(o['sha256'] for o in missing if o['destination'] == destination)
+            store_input(outputs / checksum, data, checksum)
+    return outputs
+
+
+def mixin(profile, firmware_dir, outdir):
+    """Stage the recipe's outputs under their destinations and pack the data-only mixin."""
+    recipe = recipe_for(profile)
+    if outdir.exists():
+        raise ValueError('Choose a new private output directory')
+    outdir.mkdir(parents=True, mode=0o700)
+    prepared = outdir / 'prepared'
+    files = {}
+    for output in recipe['outputs']:
+        source = Path(firmware_dir) / output['sha256']
+        if source.is_symlink() or not source.is_file() or digest(source) != output['sha256']:
+            raise ValueError('Cached firmware output is missing or differs: ' + output['destination'])
+        target = prepared / 'firmware' / output['destination']
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.copyfile(source, target)
+        target.chmod(0o600)
+        files[output['destination']] = {'bytes': target.stat().st_size, 'sha256': output['sha256']}
+    return pack_mixin(prepared, {'schema': 1, 'profile': profile, 'files': files}, outdir)

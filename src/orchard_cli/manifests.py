@@ -25,6 +25,11 @@ SCHEMAS = {
 }
 
 
+def firmware_schema():
+    """The firmware recipe schema shipped with the installed hardware data."""
+    return json.loads((Path(orchard_hardware.__file__).parent / 'schemas/v1/firmware.schema.json').read_text())
+
+
 class ManifestError(ValueError):
     pass
 

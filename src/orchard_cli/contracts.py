@@ -79,6 +79,15 @@ class Adapter(Protocol):
     PROFILE: str
     NAME: str
     REBOOT_MESSAGE: str
+    # USB product of the device's recovery system; None until it has one.
+    PRODUCT: Optional[str]
+    # Support data from the hardware descriptor ([support], [features]).
+    INSTALL: bool
+    STATUS: str
+    CAVEATS: List[str]
+    FEATURES: Dict[str, str]
+
+    def matches_dfu(self, device: Dict[str, Any]) -> bool: ...
 
     def list_devices(self) -> List[Dict[str, Any]]: ...
 
@@ -97,5 +106,4 @@ class Adapter(Protocol):
 
     def firmware_inputs(self, clock: Clock, progress: Progress, *, allow_download: bool = True) -> Path: ...
 
-    def prepare_mixin(self, adt: Path, firmware_dir: Path,
-                      outdir: Path) -> Tuple[Path, MixinReceipt]: ...
+    def prepare_mixin(self, firmware_dir: Path, outdir: Path) -> Tuple[Path, MixinReceipt]: ...

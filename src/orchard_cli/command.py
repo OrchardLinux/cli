@@ -23,6 +23,19 @@ def main():
     parser.add_argument('--version', action='version', version=version('orchard-cli'))
     parser.add_argument('--verbose', action='store_true', help='show internal device events')
     commands = parser.add_subparsers(dest='action', required=True)
+    build = commands.add_parser('build', help='build DIRECTORY/init and optional DIRECTORY/rootfs into a RAM payload')
+    build.add_argument('directory', type=Path, help='any directory containing init and optional rootfs/')
+    build.add_argument('--hardware', type=Path, help='override the active orchard-hardware package resources')
+    build.add_argument('--device', help='override the default recipe selected by orchard.toml')
+    build.add_argument('--cache', type=Path, help='override the shared component cache')
+    build.add_argument('--kernel-dir', type=Path, help='reuse a staged kernel/DTB/module tree')
+    for component in ('pongo', 'busybox', 'loader'):
+        build.add_argument('--' + component, type=Path, help='reuse this local component')
+    build.add_argument('--modules', action='store_true', help='include matching modules for manual use; does not load them')
+    run = commands.add_parser('run', help='boot the last successful RAM payload for DIRECTORY')
+    run.add_argument('directory', type=Path, help='any directory whose out/ contains the built payload')
+    run.add_argument('-y', '--yes', action='store_true',
+                     help='boot without prompting, including without an interactive terminal')
     guided = commands.add_parser('install', help='guided installation from distro name, index or manifest')
     guided.add_argument('source', nargs='?', help='registered distro, local TOML or exact HTTPS URL')
     guided.add_argument('--manifest', '--release', dest='manifest', help='explicit index or installation manifest')
@@ -36,7 +49,7 @@ def main():
     distros.add_argument('source', nargs='?')
     check = commands.add_parser('resolve', help='verify inputs without accessing a device')
     check.add_argument('source')
-    check.add_argument('--profile', default='j71b')
+    check.add_argument('--profile', required=True)
     check.add_argument('--boot', action='store_true', help='resolve only boot assets')
     commands.add_parser('devices', help='list USB devices without modifying them')
     commands.add_parser('setup-host', help='install missing boot tools and Linux USB permissions; no device access')
@@ -49,7 +62,7 @@ def main():
     adt = commands.add_parser('capture-adt', help='save a fresh recovery ADT privately')
     adt.add_argument('--output', type=Path, required=True)
     mixin = commands.add_parser('mixin', help='prepare a data-only private mixin')
-    for name in ('adt', 'firmware-dir', 'output'):
+    for name in ('firmware-dir', 'output'):
         mixin.add_argument('--' + name, type=Path, required=True)
     for action in ('status', 'diagnostics', 'targets', 'destination', 'prepare', 'install-root', 'handoff', 'abort'):
         command = commands.add_parser(action, help='invoke the device-owned ' + action + ' operation')
@@ -70,6 +83,16 @@ def main():
     args = parser.parse_args()
     progress = Progress(verbose=args.verbose)
     try:
+        if args.action == 'build':
+            from orchard_cli.ram import build_directory
+            build_directory(args.directory, hardware=args.hardware, cache=args.cache,
+                            kernel=args.kernel_dir, busybox=args.busybox, loader=args.loader,
+                            pongo=args.pongo, modules=args.modules, device=args.device)
+            return
+        if args.action == 'run':
+            from orchard_cli.boot import run_directory
+            run_directory(args.directory, yes=args.yes)
+            return
         with ExitStack() as stack:
             if args.action not in ('install', 'launch', 'distros', 'resolve', 'devices', 'mixin', 'setup-host'):
                 stack.enter_context(operation_lock())
@@ -90,7 +113,8 @@ def main():
                 record, assets = resolve(args.source, args.profile, progress, purpose='boot' if args.boot else 'install')
                 result = {'manifest': record, 'files': {key: str(path) for key, path in assets.items()}}
             elif args.action == 'devices':
-                result = load().list_devices()
+                from orchard_cli.apple import usb
+                result = usb.devices()
             elif args.action == 'setup-host':
                 from orchard_cli.host_setup import setup
                 result = setup(progress)
@@ -125,7 +149,7 @@ def main():
                 result = {'saved': str(args.output), 'bytes': len(data)}
             elif args.action == 'mixin':
                 adapter = load()
-                archive, result = adapter.prepare_mixin(args.adt, args.firmware_dir, args.output)
+                archive, result = adapter.prepare_mixin(args.firmware_dir, args.output)
                 result = {**result, 'path': str(archive)}
             else:
                 adapter, device = choose()
