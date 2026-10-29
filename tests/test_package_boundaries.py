@@ -40,7 +40,7 @@ from orchard_cli.apple import adt_tree, adt_capture, macho, osserialize, ipsw, u
 from orchard_hardware.apple import adt
 from orchard_cli.command import main
 sys.argv=['orchard','distros'];main()
-sys.argv=['orchard','resolve',MANIFEST];main()
+sys.argv=['orchard','resolve',MANIFEST,'--profile','j71b'];main()
 '''.replace('MANIFEST', repr(str(FIXTURE.resolve())))
         with tempfile.TemporaryDirectory() as store:
             result = subprocess.run([sys.executable, '-I', '-c', script], cwd=store,
