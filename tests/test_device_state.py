@@ -103,6 +103,20 @@ class DeviceIsolation(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual((rows[0]['ecid'],rows[0]['boot_id']),(2,BOOT_B))
 
+    def test_linux_ram_payload_is_available_to_ram_session_tools(self):
+        node = self.root/'1-2'
+        node.mkdir()
+        for name,value in {'idVendor':'05ac','idProduct':'4144','product':'Orchard charger-test',
+                           'serial':f'BOOT:{BOOT_B}'}.items():
+            (node/name).write_text(value)
+        (node/'iface/tty/ttyACM0').mkdir(parents=True)
+        rows = linux_usb.devices(self.root)
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['mode'],'ram')
+        self.assertEqual(rows[0]['boot_id'],BOOT_B)
+        self.assertEqual(rows[0]['serial_port'],'/dev/ttyACM0')
+        self.assertIsNone(rows[0]['ecid'])
+
 
 if __name__ == '__main__':
     unittest.main()
