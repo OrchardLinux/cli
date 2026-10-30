@@ -21,12 +21,16 @@ class RemoteFile:
     """Byte ranges of one HTTPS file whose size the caller pinned."""
 
     def __init__(self, url, size, on_bytes=None):
+        """size None takes the server's: for exploring an IPSW no recipe pins yet."""
         self.url, self.size, self.on_bytes = url, size, on_bytes
         self.downloaded = 0
         request = urllib.request.Request(url, method='HEAD')
         with open_url(request) as response:
-            if int(response.headers.get('Content-Length', -1)) != size:
-                raise ValueError('Remote IPSW size differs from the recipe')
+            actual = int(response.headers.get('Content-Length', -1))
+        if self.size is None:
+            self.size = actual
+        elif actual != size:
+            raise ValueError('Remote IPSW size differs from the recipe')
 
     def read(self, offset, length):
         if length <= 0:
@@ -201,3 +205,51 @@ def im4p_macho(blob):
     if macho[:4] != b'\xcf\xfa\xed\xfe':
         raise ValueError('Kernelcache is not a 64-bit Mach-O')
     return macho
+
+
+def main(argv=None):
+    """Explore an IPSW during bring-up, without downloading it (docs: hardware docs/firmware-recipes.md)."""
+    import argparse
+    import hashlib
+    from pathlib import Path
+    parser = argparse.ArgumentParser(prog='python -m orchard_cli.apple.remote_ipsw', description=main.__doc__)
+    parser.add_argument('ipsw', help='IPSW URL, or a device profile (j71b) to use its recipe\'s IPSW')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('members', help='the ZIP members with their sizes')
+    listing = commands.add_parser('ls', help='a directory of the system volume')
+    listing.add_argument('path', nargs='?', default='')
+    for name, what in (('get', 'a system-volume file'), ('member', 'a ZIP member')):
+        command = commands.add_parser(name, help=f'save {what}; prints its size and sha256')
+        command.add_argument('path')
+        command.add_argument('output', type=Path)
+    kernel = commands.add_parser('kernelcache', help="save a board's decompressed kernelcache Mach-O")
+    kernel.add_argument('device_class', help='BuildManifest DeviceClass, e.g. j71bap')
+    kernel.add_argument('output', type=Path)
+    args = parser.parse_args(argv)
+    url, size = args.ipsw, None
+    if not url.startswith('https://'):
+        from orchard_cli.firmware import recipe_for
+        source = recipe_for(url)['ipsw']
+        url, size = source['url'], source['bytes']
+    ipsw = Ipsw(url, size)
+    if args.command == 'members':
+        for name, (_, packed, unpacked, _) in sorted(ipsw.archive.members.items()):
+            print(f'{unpacked:>12}  {name}')
+        return
+    if args.command == 'ls':
+        volume = ipsw.volume()
+        oid = volume.lookup(args.path) if args.path.strip('/') else 2
+        for name, _, kind in sorted(volume.children(oid)):
+            print(name + ('/' if kind == 4 else ''))
+        return
+    if args.command == 'kernelcache':
+        data = ipsw.kernelcache(args.device_class)
+    else:
+        data = ipsw.system_file(args.path) if args.command == 'get' else ipsw.member(args.path)
+    args.output.write_bytes(data)
+    print(f'{len(data)} bytes  sha256 {hashlib.sha256(data).hexdigest()}  -> {args.output}')
+    print(f'read {ipsw.remote.downloaded / 1e6:.1f} MB of the IPSW')
+
+
+if __name__ == '__main__':
+    main()

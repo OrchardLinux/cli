@@ -56,6 +56,22 @@ class RemoteIpsw(unittest.TestCase):
         self.assertIsNone(requests[0])  # HEAD first, then only ranges
         self.assertTrue(all(r.startswith('bytes=') for r in requests[1:]))
 
+    def test_explore_lists_and_saves_members(self):
+        import contextlib
+        import tempfile
+        from pathlib import Path
+        blob = ipsw({'BuildManifest.plist': (b'manifest', zipfile.ZIP_DEFLATED),
+                     'kernelcache.release.x': (b'k' * 10, zipfile.ZIP_STORED)})
+        out = io.StringIO()
+        with patch.object(remote_ipsw, 'open_url', server(blob, [])), contextlib.redirect_stdout(out), \
+                tempfile.TemporaryDirectory() as directory:
+            remote_ipsw.main(['https://example.invalid/x.ipsw', 'members'])
+            target = Path(directory) / 'manifest'
+            remote_ipsw.main(['https://example.invalid/x.ipsw', 'member', 'BuildManifest.plist', str(target)])
+            self.assertEqual(target.read_bytes(), b'manifest')
+        self.assertIn('          10  kernelcache.release.x', out.getvalue())
+        self.assertIn('8 bytes  sha256 ', out.getvalue())
+
     def test_size_differing_from_recipe_is_refused(self):
         blob = ipsw({'a': (b'a', zipfile.ZIP_STORED)})
         with patch.object(remote_ipsw, 'open_url', server(blob, [])):
