@@ -69,10 +69,8 @@ def _summary(path):
 
 
 def show(cache=None):
-    rows = entries(cache)
-    if not rows:
-        print('Component cache is empty')
-        return
+    root = Path(cache or cache_root())
+    rows = entries(root)
     total = 0
     for component, key, path in rows:
         size = _size(path)
@@ -80,13 +78,20 @@ def show(cache=None):
         when = datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d %H:%M')  # last use
         state = 'unfinished build' if key.startswith('build-') else _summary(path)
         print(f'{component:22} {key[:12]:12} {_human(size):>7}  {when}  {state}')
-    components = Path(cache or cache_root()) / 'components-v2'
-    print(f'{len(rows)} entries, {_human(total)} ({_human(_on_disk(components))} on disk) in {components}')
-    work = work_entries(cache)
+    components = root / 'components-v2'
+    if rows:
+        print(f'{len(rows)} entries, {_human(total)} ({_human(_on_disk(components))} on disk) in {components}')
+    else:
+        print('Component cache is empty')
+    compiler = root / 'ccache'
+    if compiler.is_dir():
+        # ccache keeps itself within its own size limit (5 GB by default).
+        print(f'Compiler cache {_human(_on_disk(compiler))} in {compiler}')
+    work = work_entries(root)
     if work:
         recipes = sorted({recipe for recipe, _, _ in work})
         print(f'{len(work)} work director{"y" if len(work) == 1 else "ies"} ({", ".join(recipes)}), '
-              f'{_human(_on_disk(Path(cache or cache_root()) / "work"))} in {Path(cache or cache_root()) / "work"}')
+              f'{_human(_on_disk(root / "work"))} in {root / "work"}')
 
 
 def remove(selectors, cache=None):

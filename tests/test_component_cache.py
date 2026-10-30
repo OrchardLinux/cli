@@ -177,6 +177,11 @@ class ComponentCacheTests(unittest.TestCase):
             build._prepare_m1n1(hardware, self.parent, 'j71b')
         self.assertEqual(seen, [(False, False)])
 
+    def test_listing_shows_the_compiler_cache(self):
+        (self.cache / 'ccache/kernel/a').mkdir(parents=True)
+        (self.cache / 'ccache/kernel/a/object').write_bytes(b'o' * 2048)
+        self.assertIn('Compiler cache 2.0K', self.quietly(components.show, self.cache))
+
     def test_prune_keeps_recent_work_directories_and_kernel_trees(self):
         work = self.cache / 'work/pongo'
         for name, when in (('old', 1000), ('mid', 2000), ('new', 3000)):
