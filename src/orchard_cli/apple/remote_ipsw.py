@@ -12,7 +12,7 @@ import urllib.request
 import zlib
 
 from orchard_cli.http import open_url
-from . import apfs, lzfse, udif
+from . import apfs, lzfse, lzss, udif
 
 ATTEMPTS = 3
 
@@ -173,7 +173,7 @@ class Ipsw:
 
 
 def im4p_macho(blob):
-    """The Mach-O inside an LZFSE-compressed IM4P kernelcache."""
+    """The Mach-O inside a compressed IM4P kernelcache (LZFSE, or LZSS on older releases)."""
     def item(pos):
         tag, length = blob[pos], blob[pos + 1]
         pos += 2
@@ -194,9 +194,12 @@ def im4p_macho(blob):
     if len(fields) < 4 or fields[0] != (0x16, b'IM4P') or fields[3][0] != 0x04:
         raise ValueError('Kernelcache is not an IM4P')
     payload = fields[3][1]
-    if payload[:4] not in (b'bvx2', b'bvx1', b'bvx-', b'bvxn'):
-        raise ValueError('Kernelcache is not LZFSE-compressed')
-    macho = lzfse.decompress(payload)
+    if payload[:8] == b'complzss':  # older kernelcaches, e.g. iPadOS 16 on A9
+        macho = lzss.decompress(payload)
+    elif payload[:4] in (b'bvx2', b'bvx1', b'bvx-', b'bvxn'):
+        macho = lzfse.decompress(payload)
+    else:
+        raise ValueError('Kernelcache is neither LZFSE- nor LZSS-compressed')
     if macho[:4] == b'\xca\xfe\xba\xbe':  # one-slice fat wrapper
         if struct.unpack_from('>I', macho, 4)[0] != 1:
             raise ValueError('Fat kernelcache with several slices')
