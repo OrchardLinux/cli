@@ -112,8 +112,16 @@ Subsequent module/DTB edits bypass the full producer. CLI restores a private SDK
 copy and in-tree module paths, then calls the original hardware module/staging/DTB
 recipes. No make command writes into the shared cached SDK.
 
+Each component records the inputs of its key in `key-inputs.json`. On a miss the
+build prints which inputs differ from the newest cached entry of that component,
+e.g. `differs from newest cached 0bd1204e3f1a in: tree`. The device layer depends
+on the device's DTB selection only, not on the rest of `device.toml`.
+`orchard cache` lists the shared components with their size and inputs;
+`orchard cache kernel-j71b/0bd1204e` removes one entry and `orchard cache kernel-j71b`
+all of a component's entries.
+
 Cached artifacts are hash-checked, inputs are rechecked before publication, and a
-cache lock refuses concurrent builds into the same cache. Editable Linux source
+cache lock makes a second build into the same cache wait for the first. Editable Linux source
 and incremental compiler output stay under each hardware checkout's
 `kernel/.work/`. On a cache miss, source acquisition borrows upstream objects
 from the shared store; it never resets an existing checkout. Do not prune/delete
