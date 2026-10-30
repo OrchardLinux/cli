@@ -152,11 +152,17 @@ def prepare_source(hardware, cache, device):
             current = sources.working_tree(source)
             if current != desired:
                 with sources.repository(selected['url'], selected['commit'], cache=cache) as bare:
+                    # The current tree's objects live in the source: a series
+                    # built by hardware's kernel/build alone was never declared
+                    # in the shared store.
+                    objects = Path(os.fsdecode(sources.git(source, 'rev-parse', '--git-path', 'objects')))
+                    env = {**os.environ, 'GIT_ALTERNATE_OBJECT_DIRECTORIES': str(
+                        objects if objects.is_absolute() else source / objects)}
                     # Patch bytes are not text identifiers: stripping their
                     # trailing whitespace corrupts blank context/binary data.
                     delta = subprocess.check_output(
                         ['git', '-C', str(bare), 'diff', '--binary', current, desired],
-                        stderr=subprocess.PIPE)
+                        stderr=subprocess.PIPE, env=env)
                 for flags in (['--check'], []):
                     subprocess.run(['git', '-C', str(source), 'apply', *flags, '-'],
                                    input=delta, check=True)

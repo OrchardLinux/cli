@@ -160,6 +160,27 @@ class SourceCacheTests(unittest.TestCase):
                 self.assertEqual((source / 'driver.c').read_bytes(), second)
                 self.assertEqual((output / 'keep.o').read_bytes(), b'compiled object')
 
+    def test_transition_from_a_series_built_outside_orchard(self):
+        # hardware/kernel/build run directly leaves the shared tree at a series
+        # the CLI never declared; the next transition must still find its objects.
+        from orchard_cli import kernel
+        hardware = self.root / 'hardware'
+        patches = hardware_layout.write(hardware)
+        (hardware / 'kernel/upstream.lock').write_text(f'url={self.url}\ncommit={self.commit}\n')
+        def change(text, name='0001-driver.patch'):
+            (self.upstream / 'driver.c').write_text(text)
+            (patches / name).write_bytes(self.git('diff', '--binary') + b'\n')
+            self.git('checkout', '--', 'driver.c')
+        change('first patch\n')
+        source, output = kernel.prepare_source(hardware, self.cache, 'j71b')
+        (source / 'driver.c').write_text('series built by kernel/build alone\n')
+        work = source.parent
+        (work / 'applied-patches').write_text('recorded by kernel/build\n')
+        (work / 'prepared-tree').write_text(sources.working_tree(source) + '\n')
+        change('second patch\n')
+        kernel.prepare_source(hardware, self.cache, 'j71b')
+        self.assertEqual((source / 'driver.c').read_text(), 'second patch\n')
+
     def test_changed_patches_with_user_edits_cannot_hit_unrelated_cache(self):
         from orchard_cli import build, kernel
         hardware = self.root / 'hardware'
