@@ -17,10 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
 
 from . import sources, kernel as kernels
 
@@ -69,8 +66,10 @@ def digest(path):
 
 
 def command(*argv, env=None):
+    """Run a hardware recipe. Its Python is Orchard's own, which has orchard_hardware."""
     print('+', ' '.join(map(str, argv)), flush=True)
-    subprocess.run(list(map(str, argv)), check=True, env=env)
+    subprocess.run(list(map(str, argv)), check=True,
+                   env={**(os.environ if env is None else env), 'ORCHARD_PYTHON': sys.executable})
 
 
 def recipe_entries(hardware, paths, *, ignore=('.work', '.git', '__pycache__')):

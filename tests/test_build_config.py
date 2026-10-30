@@ -1,6 +1,8 @@
 """Project build defaults, independent of supported-device registration."""
 from contextlib import nullcontext
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -83,3 +85,17 @@ class LoaderPatchLayout(unittest.TestCase):
             self.assertFalse(build.has_loader_patches(hardware))
             (hardware / 'boot/m1n1/patches/orchard/0001-fill-in.patch').write_text('')
             self.assertTrue(build.has_loader_patches(hardware))
+
+
+class RecipeInterpreter(unittest.TestCase):
+    def test_hardware_recipes_run_python_as_orchard_itself(self):
+        # Recipes call $ORCHARD_PYTHON; PATH's python3 may lack orchard_hardware (macOS: 3.9).
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        script = root / 'recipe'
+        script.write_text('#!/bin/sh\nprintf %s "$ORCHARD_PYTHON:$EXTRA" > "$1"\n')
+        script.chmod(0o755)
+        with patch('sys.stdout'):
+            build.command(script, root / 'default')
+            build.command(script, root / 'explicit', env={**os.environ, 'EXTRA': 'kept'})
+        self.assertEqual((root / 'default').read_text(), sys.executable + ':')
+        self.assertEqual((root / 'explicit').read_text(), sys.executable + ':kept')

@@ -4,7 +4,7 @@ Host-side tools for installing, booting, and debugging Linux on supported Apple 
 
 ## Install or update
 
-Requires Linux or macOS, Python 3.9+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo and udev. Device firmware is read straight from Apple's restore image by byte range: about 40 MB instead of a 7 GB download, with no extraction tools.
+Requires Linux or macOS, Python 3.11+ with venv/pip, libusb, and OpenSSH. Linux also requires sudo and udev. Device firmware is read straight from Apple's restore image by byte range: about 40 MB instead of a 7 GB download, with no extraction tools.
 
 ```sh
 python3 -m venv ~/.local/share/orchard/venv

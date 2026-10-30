@@ -4,10 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
 from .http import validate_url
 from .integrity import digest
 

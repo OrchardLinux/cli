@@ -37,6 +37,6 @@ From `cli/`:
 uv tool run --from 'mypy==1.18.2' mypy --config-file pyproject.toml
 ```
 
-The development-only checker is declared in the dev dependency group, not runtime dependencies. It targets Python 3.9 and checks the contract, registry, registered implementation and host command/workflow call sites. The wheel includes `py.typed` for consumers of this interface.
+The development-only checker is declared in the dev dependency group, not runtime dependencies. It targets Python 3.11 and checks the contract, registry, registered implementation and host command/workflow call sites. The wheel includes `py.typed` for consumers of this interface.
 
 Unit tests cover conformance/member/profile checks, loader non-mutation and explicit resume state. Existing CLI tests continue covering identity binding, uncertain-outcome/no-retry behavior, private archives, offline imports, source-denied wheel operation and SSH retirement. These contract checks require no physical device.
