@@ -163,17 +163,24 @@ class Ipsw:
 
     def kernelcache(self, device_class):
         """The decompressed kernelcache Mach-O of a board, e.g. 'j71bap'."""
+        return im4p_macho(self.member(self._manifest_path(device_class, 'KernelCache')))
+
+    def device_tree(self, device_class):
+        """The board's device tree as iBoot receives it: the ADT minus what iBoot fills in."""
+        return im4p_payload(self.member(self._manifest_path(device_class, 'DeviceTree')))
+
+    def _manifest_path(self, device_class, component):
         manifest = plistlib.loads(self.member('BuildManifest.plist'))
-        paths = {identity['Manifest']['KernelCache']['Info']['Path']
+        paths = {identity['Manifest'][component]['Info']['Path']
                  for identity in manifest['BuildIdentities']
                  if identity['Info'].get('DeviceClass', '').lower() == device_class}
         if len(paths) != 1:
-            raise ValueError(f'Expected one kernelcache for {device_class}, found {len(paths)}')
-        return im4p_macho(self.member(paths.pop()))
+            raise ValueError(f'Expected one {component} for {device_class}, found {len(paths)}')
+        return paths.pop()
 
 
-def im4p_macho(blob):
-    """The Mach-O inside a compressed IM4P kernelcache (LZFSE, or LZSS on older releases)."""
+def im4p_payload(blob):
+    """The payload of an unencrypted IM4P, decompressed (LZFSE, or LZSS on older releases)."""
     def item(pos):
         tag, length = blob[pos], blob[pos + 1]
         pos += 2
@@ -185,21 +192,25 @@ def im4p_macho(blob):
 
     tag, pos, end = item(0)
     if tag != 0x30:
-        raise ValueError('Kernelcache is not a DER sequence')
+        raise ValueError('Not a DER sequence')
     fields = []
     while pos < end and len(fields) < 4:
         tag, start, stop = item(pos)
         fields.append((tag, blob[start:stop]))
         pos = stop
     if len(fields) < 4 or fields[0] != (0x16, b'IM4P') or fields[3][0] != 0x04:
-        raise ValueError('Kernelcache is not an IM4P')
+        raise ValueError('Not an IM4P')
     payload = fields[3][1]
     if payload[:8] == b'complzss':  # older kernelcaches, e.g. iPadOS 16 on A9
-        macho = lzss.decompress(payload)
-    elif payload[:4] in (b'bvx2', b'bvx1', b'bvx-', b'bvxn'):
-        macho = lzfse.decompress(payload)
-    else:
-        raise ValueError('Kernelcache is neither LZFSE- nor LZSS-compressed')
+        return lzss.decompress(payload)
+    if payload[:4] in (b'bvx2', b'bvx1', b'bvx-', b'bvxn'):
+        return lzfse.decompress(payload)
+    return payload
+
+
+def im4p_macho(blob):
+    """The Mach-O inside a compressed IM4P kernelcache."""
+    macho = im4p_payload(blob)
     if macho[:4] == b'\xca\xfe\xba\xbe':  # one-slice fat wrapper
         if struct.unpack_from('>I', macho, 4)[0] != 1:
             raise ValueError('Fat kernelcache with several slices')
@@ -228,6 +239,9 @@ def main(argv=None):
     kernel = commands.add_parser('kernelcache', help="save a board's decompressed kernelcache Mach-O")
     kernel.add_argument('device_class', help='BuildManifest DeviceClass, e.g. j71bap')
     kernel.add_argument('output', type=Path)
+    tree = commands.add_parser('dt', help="print a board's device-tree nodes whose path contains a word")
+    tree.add_argument('device_class', help='BuildManifest DeviceClass, e.g. j81ap')
+    tree.add_argument('words', nargs='+', help='e.g. wlan bluetooth multi-touch')
     args = parser.parse_args(argv)
     url, size = args.ipsw, None
     if not url.startswith('https://'):
@@ -244,6 +258,19 @@ def main(argv=None):
         oid = volume.lookup(args.path) if args.path.strip('/') else 2
         for name, _, kind in sorted(volume.children(oid)):
             print(name + ('/' if kind == 4 else ''))
+        return
+    if args.command == 'dt':
+        from orchard_cli.apple.adt_tree import parse
+        for path, node in parse(ipsw.device_tree(args.device_class)).walk():
+            if any(word in path for word in args.words):
+                print(path)
+                for name, value in node.properties.items():
+                    text = value.rstrip(b'\0')
+                    if text and all(32 <= c < 127 or c == 0 for c in text):
+                        shown = text.replace(b'\0', b'|').decode()
+                    else:
+                        shown = value[:32].hex() + ('...' if len(value) > 32 else '')
+                    print(f'  {name:32} {shown}')
         return
     if args.command == 'kernelcache':
         data = ipsw.kernelcache(args.device_class)
