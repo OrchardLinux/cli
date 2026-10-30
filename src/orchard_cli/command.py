@@ -33,9 +33,12 @@ def main():
     build.add_argument('--modules', action='store_true', help='include matching modules for manual use; does not load them')
     build.add_argument('--firmware', action='store_true',
                        help="include the device's firmware from its recipe (read from the IPSW once, then cached)")
-    cached = commands.add_parser('cache', help='list or remove shared build components; no device access')
+    cached = commands.add_parser('cache', help='list, remove or prune shared build components; no device access')
     cached.add_argument('remove', nargs='*', metavar='COMPONENT[/KEY]',
                         help='entries to delete, e.g. kernel-j71b/0bd1204e; lists entries when omitted')
+    cached.add_argument('--prune', action='store_true',
+                        help='keep only the most recently used entries of each component')
+    cached.add_argument('--keep', type=int, default=5, help='entries per component that --prune keeps (default 5)')
     cached.add_argument('--cache', type=Path, help='override the shared component cache')
     run = commands.add_parser('run', help='boot the last successful RAM payload for DIRECTORY')
     run.add_argument('directory', type=Path, help='any directory whose out/ contains the built payload')
@@ -100,7 +103,14 @@ def main():
             return
         if args.action == 'cache':
             from orchard_cli import components
-            components.remove(args.remove, args.cache) if args.remove else components.show(args.cache)
+            if args.prune and args.remove:
+                raise ValueError('Give entries to remove or --prune, not both')
+            if args.prune:
+                components.prune(args.keep, args.cache)
+            elif args.remove:
+                components.remove(args.remove, args.cache)
+            else:
+                components.show(args.cache)
             return
         if args.action == 'run':
             from orchard_cli.boot import run_directory

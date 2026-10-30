@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 
-from .build import INPUTS_RECORD, cache_root, component_lock
+from .build import INPUTS_RECORD, cache_root, component_lock, remove_unshared, share_files
 
 
 def _size(path):
@@ -15,6 +15,18 @@ def _size(path):
             file = Path(directory) / name
             if not file.is_symlink():
                 total += file.stat().st_size
+    return total
+
+
+def _on_disk(path):
+    """Bytes under PATH, counting hard-linked files once."""
+    seen, total = set(), 0
+    for directory, _, names in os.walk(path):
+        for name in names:
+            info = (Path(directory) / name).lstat()
+            if (info.st_dev, info.st_ino) not in seen:
+                seen.add((info.st_dev, info.st_ino))
+                total += info.st_size
     return total
 
 
@@ -31,7 +43,7 @@ def entries(cache=None):
     if not components.is_dir():
         return []
     return [(parent.name, entry.name, entry)
-            for parent in sorted(components.iterdir()) if parent.is_dir()
+            for parent in sorted(components.iterdir()) if parent.is_dir() and not parent.name.startswith('.')
             for entry in sorted(parent.iterdir(), key=lambda p: p.stat().st_mtime) if entry.is_dir()]
 
 
@@ -56,10 +68,11 @@ def show(cache=None):
     for component, key, path in rows:
         size = _size(path)
         total += size
-        when = datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+        when = datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d %H:%M')  # last use
         state = 'unfinished build' if key.startswith('build-') else _summary(path)
         print(f'{component:22} {key[:12]:12} {_human(size):>7}  {when}  {state}')
-    print(f'{len(rows)} entries, {_human(total)} in {Path(cache or cache_root()) / "components-v2"}')
+    components = Path(cache or cache_root()) / 'components-v2'
+    print(f'{len(rows)} entries, {_human(total)} ({_human(_on_disk(components))} on disk) in {components}')
 
 
 def remove(selectors, cache=None):
@@ -80,3 +93,32 @@ def remove(selectors, cache=None):
         for component, key, path in chosen:
             shutil.rmtree(path)
             print(f'Removed {component}/{key}')
+        remove_unshared(root / 'components-v2')
+
+
+def prune(keep, cache=None):
+    """Keep the KEEP most recently used entries of each component; delete the rest.
+
+    Also removes builds that never finished and shares identical files of
+    entries published before sharing existed.
+    """
+    if keep < 1:
+        raise ValueError('--keep must be at least 1')
+    root = Path(cache or cache_root())
+    components = root / 'components-v2'
+    if not components.is_dir():
+        print('Component cache is empty')
+        return
+    with component_lock(root):
+        before = _on_disk(components)
+        kept = {}
+        for component, key, path in reversed(entries(root)):  # newest use first
+            if key.startswith('build-') or kept.setdefault(component, 0) >= keep:
+                shutil.rmtree(path)
+                print(f'Removed {component}/{key}')
+                continue
+            kept[component] += 1
+            share_files(components, path, json.loads((path / 'component.json').read_text()))
+        remove_unshared(components)
+        after = _on_disk(components)
+    print(f'Freed {_human(before - after)}; {_human(after)} on disk in {components}')

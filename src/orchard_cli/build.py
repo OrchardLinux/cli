@@ -12,6 +12,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -185,6 +186,45 @@ def component_lock(cache):
 
 
 INPUTS_RECORD = 'key-inputs.json'
+# One copy of each file content and mode, hard-linked into every entry that has it.
+SHARED_FILES = '.objects'
+
+
+def share_files(cache, root, records):
+    """Replace files under ROOT by hard links to the cache's single copy of their content.
+
+    Entries are never written after publication, so sharing is invisible to
+    readers; reuse still verifies every file. A shared copy that no longer
+    matches its name is replaced instead of spreading. Filesystems without
+    hard links keep private copies.
+    """
+    store = cache / SHARED_FILES
+    store.mkdir(exist_ok=True)
+    for relative, checksum in records.items():
+        path = root / relative
+        shared = store / f'{checksum}-{stat.S_IMODE(path.lstat().st_mode):o}'
+        try:
+            if shared.exists() and os.path.samefile(shared, path):
+                continue
+            if shared.exists() and digest(shared) != checksum:
+                shared.unlink()
+            if not shared.exists():
+                os.link(path, shared)
+                continue
+            replacement = path.with_name(path.name + '.orchard-share')
+            os.link(shared, replacement)
+            os.replace(replacement, path)
+        except OSError:
+            continue
+
+
+def remove_unshared(cache):
+    """Delete shared copies no entry links to any more."""
+    store = cache / SHARED_FILES
+    if store.is_dir():
+        for shared in store.iterdir():
+            if shared.lstat().st_nlink == 1:
+                shared.unlink()
 
 
 def _flatten(value, prefix=''):
@@ -229,6 +269,7 @@ def cached_component(cache, name, key, produce):
             path = target / relative
             if path.is_symlink() or digest(path) != expected:
                 raise ValueError(f'Cached component changed: {path}; remove that component and rebuild')
+        os.utime(target)  # last use, which `orchard cache --prune` keeps by
         print(f'Reusing {name}: {target}', flush=True)
         return target
     print(f'Building {name} (cache miss): {target}', flush=True)
@@ -250,6 +291,7 @@ def cached_component(cache, name, key, produce):
             raise ValueError(f'{name} inputs changed during build; result was not cached')
         if target.exists():
             raise ValueError(f'Component appeared during build: {target}; inspect before rebuilding')
+        share_files(cache, stage, records)
         stage.rename(target)
     return target
 

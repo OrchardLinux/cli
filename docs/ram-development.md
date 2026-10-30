@@ -116,9 +116,17 @@ Each component records the inputs of its key in `key-inputs.json`. On a miss the
 build prints which inputs differ from the newest cached entry of that component,
 e.g. `differs from newest cached 0bd1204e3f1a in: tree`. The device layer depends
 on the device's DTB selection only, not on the rest of `device.toml`.
-`orchard cache` lists the shared components with their size and inputs;
+`orchard cache` lists the shared components with their size, last use and inputs;
 `orchard cache kernel-j71b/0bd1204e` removes one entry and `orchard cache kernel-j71b`
-all of a component's entries.
+all of a component's entries. `orchard cache --prune` keeps the five most recently
+used entries of each component (`--keep N` for another number) and removes
+unfinished builds.
+
+Entries store each file once: a file whose content and mode another entry already
+has becomes a hard link to the single copy in `components-v2/.objects/`. Kernel
+entries of one device mostly differ in a few files, so sharing makes about 90% of
+their size disappear from disk. The listing shows both the entries' size and what
+they use on disk.
 
 Cached artifacts are hash-checked, inputs are rechecked before publication, and a
 cache lock makes a second build into the same cache wait for the first. Editable Linux source
