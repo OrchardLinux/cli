@@ -56,6 +56,22 @@ class RemoteIpsw(unittest.TestCase):
         self.assertIsNone(requests[0])  # HEAD first, then only ranges
         self.assertTrue(all(r.startswith('bytes=') for r in requests[1:]))
 
+    def test_explore_lists_and_saves_members(self):
+        import contextlib
+        import tempfile
+        from pathlib import Path
+        blob = ipsw({'BuildManifest.plist': (b'manifest', zipfile.ZIP_DEFLATED),
+                     'kernelcache.release.x': (b'k' * 10, zipfile.ZIP_STORED)})
+        out = io.StringIO()
+        with patch.object(remote_ipsw, 'open_url', server(blob, [])), contextlib.redirect_stdout(out), \
+                tempfile.TemporaryDirectory() as directory:
+            remote_ipsw.main(['https://example.invalid/x.ipsw', 'members'])
+            target = Path(directory) / 'manifest'
+            remote_ipsw.main(['https://example.invalid/x.ipsw', 'member', 'BuildManifest.plist', str(target)])
+            self.assertEqual(target.read_bytes(), b'manifest')
+        self.assertIn('          10  kernelcache.release.x', out.getvalue())
+        self.assertIn('8 bytes  sha256 ', out.getvalue())
+
     def test_size_differing_from_recipe_is_refused(self):
         blob = ipsw({'a': (b'a', zipfile.ZIP_STORED)})
         with patch.object(remote_ipsw, 'open_url', server(blob, [])):
@@ -81,8 +97,21 @@ class RemoteIpsw(unittest.TestCase):
                bytes(4) + macho)
         wrapped = b'bvx-' + struct.pack('<I', len(fat)) + fat + b'bvx$'
         self.assertEqual(remote_ipsw.im4p_macho(im4p(wrapped)), macho)
-        with self.assertRaisesRegex(ValueError, 'not LZFSE'):
+        with self.assertRaisesRegex(ValueError, 'neither LZFSE'):
             remote_ipsw.im4p_macho(im4p(macho))
+
+    def test_lzss_kernelcache_decodes_literals_and_back_references(self):
+        import zlib
+        from orchard_cli.apple import lzss
+        # Flags 0xFF: eight literals. Then flags 0x00: one reference to ring
+        # position 0xFEE (where the first literal landed), length 3 + 2 = 5.
+        stream = b'\xff' + b'abcdefgh' + b'\x00' + bytes([0xEE, 0xF3])
+        expected = b'abcdefgh' + b'abcde'
+        container = (b'complzss' + struct.pack('>III', zlib.adler32(expected), len(expected), len(stream))
+                     ).ljust(lzss.HEADER, b'\0') + stream
+        self.assertEqual(lzss.decompress(container), expected)
+        with self.assertRaisesRegex(ValueError, 'checksum'):
+            lzss.decompress(container[:8] + b'\0\0\0\0' + container[12:])
 
     def test_lzvn_block_decodes(self):
         # One literal run of three bytes (0xE3), then the end-of-stream opcode.
