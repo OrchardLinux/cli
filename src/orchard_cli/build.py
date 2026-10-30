@@ -358,11 +358,24 @@ TOOL_INPUTS = ['boot/initramfs/recovery/' + name for name in
                 'install-toolchain', 'upstream.lock')] + ['buildenv.py']
 
 
+def recipe_work(components, recipe, key):
+    """Work directory of one recipe input set, shared by every checkout in the Orchard cache.
+
+    Recipes keep sources and incremental output there. Use refreshes the
+    directory's time, which `orchard cache --prune` keeps by. Caller holds the lock.
+    """
+    work = components.parent / 'work' / recipe / key
+    if work.exists():
+        os.utime(work)
+    else:
+        work.parent.mkdir(parents=True, exist_ok=True)
+    return work
+
+
 def _prepare_tools(hardware, components):
     """The hardware's static recovery tools (BusyBox, Dropbear, Wi-Fi tools). Caller holds the lock."""
     def produce_tools(stage):
-        work = hardware / '.work/tools'
-        work = work / recipe_key(hardware, TOOL_INPUTS)
+        work = recipe_work(components, 'recovery-tools', recipe_key(hardware, TOOL_INPUTS))
         if not (work / 'bin/busybox').exists():
             command(hardware / 'boot/initramfs/recovery/build-tools',
                     env={**os.environ, 'OMA_RECOVERY_TOOLS_WORK': str(work)})
@@ -385,7 +398,7 @@ def _prepare_pongo(hardware, components):
     def produce(stage):
         if sys.platform != 'darwin':
             raise ValueError('Building Pongo needs macOS/Xcode; use --pongo FILE on Linux')
-        work = hardware / '.work/pongo' / recipe_key(hardware, ['boot/quiet'])
+        work = recipe_work(components, 'pongo', recipe_key(hardware, ['boot/quiet']))
         argv = [sys.executable, hardware / 'boot/quiet/build-pongo.py',
                 '--work-dir', work, '--output', stage / 'pongo.bin']
         if (work / 'source').exists():
@@ -395,13 +408,21 @@ def _prepare_pongo(hardware, components):
 
 
 def _prepare_m1n1(hardware, components, device):
+    def key():
+        return recipe_key(hardware, ['boot/m1n1', 'buildenv.py'])
+
     def produce(stage):
-        argv = [hardware / 'boot/m1n1/build', device, '--output', stage / 'm1n1.bin']
-        if (hardware / 'boot/m1n1/.work' / device).exists():
+        # One tree per patch set: a changed series starts a fresh tree instead
+        # of resuming one the recipe would refuse. Crates are shared.
+        work = recipe_work(components, 'm1n1-' + device, key())
+        argv = [hardware / 'boot/m1n1/build', device, '--output', stage / 'm1n1.bin',
+                '--work-dir', work, '--cargo-dir', components.parent / 'work/.cargo-m1n1']
+        if (work / 'applied-patches').exists():
             argv.append('--resume')
+        elif work.exists():
+            shutil.rmtree(work)  # an earlier attempt stopped before its patches were applied
         command(*argv)
-    return cached_component(components, 'm1n1-' + device,
-                            lambda: recipe_key(hardware, ['boot/m1n1', 'buildenv.py']), produce) / 'm1n1.bin'
+    return cached_component(components, 'm1n1-' + device, key, produce) / 'm1n1.bin'
 
 
 def prepare_components(hardware=None, cache=None, *, device, kernel=None,

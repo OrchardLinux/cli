@@ -1,4 +1,4 @@
-"""Inspect and prune the shared build component cache (components-v2)."""
+"""Inspect and prune the shared build cache: components-v2 and the recipes' work directories."""
 from datetime import datetime
 import json
 import os
@@ -37,14 +37,23 @@ def _human(size):
         size /= 1024
 
 
-def entries(cache=None):
-    """(component, key, path) for published entries and leftover build directories."""
-    components = Path(cache or cache_root()) / 'components-v2'
-    if not components.is_dir():
+def _keyed(directory):
+    """(name, key, path) for DIRECTORY/NAME/KEY, oldest use first within each name."""
+    if not directory.is_dir():
         return []
     return [(parent.name, entry.name, entry)
-            for parent in sorted(components.iterdir()) if parent.is_dir() and not parent.name.startswith('.')
+            for parent in sorted(directory.iterdir()) if parent.is_dir() and not parent.name.startswith('.')
             for entry in sorted(parent.iterdir(), key=lambda p: p.stat().st_mtime) if entry.is_dir()]
+
+
+def entries(cache=None):
+    """(component, key, path) for published entries and leftover build directories."""
+    return _keyed(Path(cache or cache_root()) / 'components-v2')
+
+
+def work_entries(cache=None):
+    """(recipe, key, path) for the recipes' work directories (m1n1, Pongo, recovery tools)."""
+    return _keyed(Path(cache or cache_root()) / 'work')
 
 
 def _summary(path):
@@ -73,6 +82,11 @@ def show(cache=None):
         print(f'{component:22} {key[:12]:12} {_human(size):>7}  {when}  {state}')
     components = Path(cache or cache_root()) / 'components-v2'
     print(f'{len(rows)} entries, {_human(total)} ({_human(_on_disk(components))} on disk) in {components}')
+    work = work_entries(cache)
+    if work:
+        recipes = sorted({recipe for recipe, _, _ in work})
+        print(f'{len(work)} work director{"y" if len(work) == 1 else "ies"} ({", ".join(recipes)}), '
+              f'{_human(_on_disk(Path(cache or cache_root()) / "work"))} in {Path(cache or cache_root()) / "work"}')
 
 
 def remove(selectors, cache=None):
@@ -99,16 +113,16 @@ def remove(selectors, cache=None):
 def prune(keep, cache=None):
     """Keep the KEEP most recently used entries of each component; delete the rest.
 
-    Also removes builds that never finished and shares identical files of
-    entries published before sharing existed.
+    Also removes builds that never finished, shares identical files of
+    entries published before sharing existed, and keeps the KEEP most
+    recently used work directories of each recipe. Kernel trees are kept:
+    they hold editable source.
     """
     if keep < 1:
         raise ValueError('--keep must be at least 1')
     root = Path(cache or cache_root())
     components = root / 'components-v2'
-    if not components.is_dir():
-        print('Component cache is empty')
-        return
+    components.mkdir(parents=True, exist_ok=True)
     with component_lock(root):
         before = _on_disk(components)
         kept = {}
@@ -120,5 +134,13 @@ def prune(keep, cache=None):
             kept[component] += 1
             share_files(components, path, json.loads((path / 'component.json').read_text()))
         remove_unshared(components)
-        after = _on_disk(components)
-    print(f'Freed {_human(before - after)}; {_human(after)} on disk in {components}')
+        work = root / 'work'
+        before += _on_disk(work)
+        used = {}
+        for recipe, key, path in reversed(work_entries(root)):
+            used[recipe] = used.get(recipe, 0) + 1
+            if used[recipe] > keep:
+                shutil.rmtree(path)
+                print(f'Removed work {recipe}/{key}')
+        after = _on_disk(components) + _on_disk(work)
+    print(f'Freed {_human(before - after)}; {_human(after)} on disk in {root}')

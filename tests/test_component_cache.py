@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from orchard_cli import build, components
 
@@ -128,6 +129,67 @@ class ComponentCacheTests(unittest.TestCase):
         output = self.quietly(components.show, self.cache)
         self.assertIn('2 entries, 8.', output)
         self.assertIn('(4.', output)
+
+    def test_recipe_work_lives_in_the_cache_per_input_set(self):
+        hardware = self.cache / 'hardware'
+        (hardware / 'boot/m1n1').mkdir(parents=True)
+        (hardware / 'boot/m1n1/series').write_text('patches/orchard\n')
+        (hardware / 'buildenv.py').write_text('')
+        calls = []
+
+        def fake_build(*argv, env=None):
+            calls.append([str(a) for a in argv])
+            output = Path(argv[argv.index('--output') + 1])
+            work = Path(argv[argv.index('--work-dir') + 1])
+            (work / 'source').mkdir(parents=True, exist_ok=True)
+            (work / 'applied-patches').write_text(series)
+            output.write_bytes(series.encode())
+
+        with patch.object(build, 'command', fake_build), contextlib.redirect_stdout(io.StringIO()):
+            series = 'one'
+            first = build._prepare_m1n1(hardware, self.parent, 'j71b')
+            (hardware / 'boot/m1n1/series').write_text('patches/orchard\npatches/extra\n')
+            series = 'two'
+            build._prepare_m1n1(hardware, self.parent, 'j71b')
+        works = [Path(argv[argv.index('--work-dir') + 1]) for argv in calls]
+        self.assertEqual([w.parent for w in works], [self.cache / 'work/m1n1-j71b'] * 2)
+        self.assertNotEqual(works[0], works[1])  # a changed series gets a fresh tree, never a refused resume
+        self.assertNotIn('--resume', calls[1])
+        self.assertTrue(all(argv[argv.index('--cargo-dir') + 1] == str(self.cache / 'work/.cargo-m1n1')
+                            for argv in calls))
+        self.assertFalse((hardware / 'boot/m1n1/.work').exists())
+        self.assertEqual(first.read_bytes(), b'one')
+
+    def test_interrupted_m1n1_tree_is_started_again(self):
+        hardware = self.cache / 'hardware'
+        (hardware / 'boot/m1n1').mkdir(parents=True)
+        (hardware / 'buildenv.py').write_text('')
+        key = build.recipe_key(hardware, ['boot/m1n1', 'buildenv.py'])
+        partial = self.cache / 'work/m1n1-j71b' / key
+        (partial / 'source').mkdir(parents=True)
+        seen = []
+
+        def run(*argv, env=None):
+            seen.append(('--resume' in map(str, argv), partial.exists()))
+            Path(argv[argv.index('--output') + 1]).write_bytes(b'm1n1')
+
+        with patch.object(build, 'command', run), contextlib.redirect_stdout(io.StringIO()):
+            build._prepare_m1n1(hardware, self.parent, 'j71b')
+        self.assertEqual(seen, [(False, False)])
+
+    def test_prune_keeps_recent_work_directories_and_kernel_trees(self):
+        work = self.cache / 'work/pongo'
+        for name, when in (('old', 1000), ('mid', 2000), ('new', 3000)):
+            (work / name).mkdir(parents=True)
+            os.utime(work / name, (when, when))
+        (self.cache / 'work/.cargo-m1n1/registry').mkdir(parents=True)
+        tree = self.cache / 'kernel-work/apple-16k-cee9395acd80/source'
+        tree.mkdir(parents=True)
+        output = self.quietly(components.prune, 2, self.cache)
+        self.assertEqual(sorted(p.name for p in work.iterdir()), ['mid', 'new'])
+        self.assertIn('Removed work pongo/old', output)
+        self.assertTrue((self.cache / 'work/.cargo-m1n1/registry').is_dir())
+        self.assertTrue(tree.is_dir())
 
 
 if __name__ == '__main__':
