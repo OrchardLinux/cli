@@ -4,7 +4,7 @@ The bootstrap installs `releases/latest/download/requirements.txt`. This file se
 
 ## GitHub Actions
 
-`.github/workflows/build.yml` tests on Python 3.9 and 3.12 for pull requests and `main`. It downloads a published hardware wheel and verifies its release checksums; no sibling source checkout is used. The default hardware tag is explicit in the workflow and must be updated with the package dependency when selecting a new pair. Manual dispatch also lets you choose a hardware tag.
+`.github/workflows/build.yml` tests on Python 3.9 and 3.12 for pull requests and `main`. Until hardware 0.1.11 is published, those development checks build its wheel from a pinned hardware source revision. That source wheel does not include the prebuilt loaders in a published hardware wheel. Tag and manual builds use a published hardware wheel with verified release checksums, or an explicitly selected hardware workflow artifact. They default to hardware v0.1.11, which must be published before a release build can use it. Manual dispatch also lets you choose a hardware tag.
 
 A version tag matching `pyproject.toml` creates a **draft** release containing the wheel, sdist, hashed `requirements.txt` and `SHA256SUMS`. Manual builds only retain workflow artifacts for seven days. The hardware release must be published first; cross-repository drafts are not public dependency URLs. Nothing publishes automatically or operates a device.
 
