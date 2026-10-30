@@ -97,8 +97,9 @@ class RemoteIpsw(unittest.TestCase):
                bytes(4) + macho)
         wrapped = b'bvx-' + struct.pack('<I', len(fat)) + fat + b'bvx$'
         self.assertEqual(remote_ipsw.im4p_macho(im4p(wrapped)), macho)
-        with self.assertRaisesRegex(ValueError, 'neither LZFSE'):
-            remote_ipsw.im4p_macho(im4p(macho))
+        self.assertEqual(remote_ipsw.im4p_macho(im4p(macho)), macho)  # stored uncompressed
+        with self.assertRaisesRegex(ValueError, 'not a 64-bit Mach-O'):
+            remote_ipsw.im4p_macho(im4p(b'dtre' + bytes(60)))
 
     def test_lzss_kernelcache_decodes_literals_and_back_references(self):
         import zlib
