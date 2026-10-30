@@ -192,3 +192,10 @@ class HostWorkflow(unittest.TestCase):
         with self.assertRaises(ValueError):
             hcd_from_binary(command, '0' * 64)
 
+    def test_hcd_extraction_finds_streams_without_a_config_header(self):
+        # Older BlueTool streams (BCM4350) follow each other without BRCMcfgS.
+        first = b'\x4c\xfc\x06' + b'\x01' * 6 + b'\x4e\xfc\x04' + b'\xff' * 4
+        second = b'\x4c\xfc\x05' + b'\x02' * 5 + b'\x4c\xfc\x02ab' + b'\x4e\xfc\x04' + b'\xff' * 4
+        data = b'code' + first + b'\x00' + second + b'tail'
+        self.assertEqual(hcd_from_binary(data, hashlib.sha256(second).hexdigest()), second)
+
