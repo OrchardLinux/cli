@@ -72,9 +72,9 @@ def command(*argv, env=None):
     subprocess.run(list(map(str, argv)), check=True, env=env)
 
 
-def recipe_key(hardware, paths, *, ignore=('.work', '.git', '__pycache__')):
-    """Hash recipes, not build output or experiment files."""
-    result = hashlib.sha256()
+def recipe_entries(hardware, paths, *, ignore=('.work', '.git', '__pycache__')):
+    """{relative path: "mode:sha256"} for recipe files, in hashing order."""
+    entries = {}
     for relative in paths:
         root = hardware / relative
         files = [root] if root.is_file() else []
@@ -83,42 +83,76 @@ def recipe_key(hardware, paths, *, ignore=('.work', '.git', '__pycache__')):
                 dirs[:] = sorted(d for d in dirs if d not in ignore)
                 files.extend(Path(directory) / name for name in sorted(names))
         for path in files:
-            result.update(str(path.relative_to(hardware)).encode() + b'\0')
-            result.update(str(path.stat().st_mode & 0o777).encode() + b'\0')
-            result.update(digest(path).encode())
+            entries[str(path.relative_to(hardware))] = f'{path.stat().st_mode & 0o777}:{digest(path)}'
+    return entries
+
+
+def recipe_key(hardware, paths, *, ignore=('.work', '.git', '__pycache__')):
+    """Hash recipes, not build output or experiment files."""
+    result = hashlib.sha256()
+    for relative, entry in recipe_entries(hardware, paths, ignore=ignore).items():
+        mode, checksum = entry.split(':')
+        result.update(relative.encode() + b'\0')
+        result.update(mode.encode() + b'\0')
+        result.update(checksum.encode())
     return result.hexdigest()
+
+
+def keyed(inputs):
+    """Key callable over a dict of inputs; remembers them for the cache record and miss reports."""
+    def key():
+        key.inputs = inputs()
+        return hashlib.sha256(json.dumps(key.inputs, sort_keys=True).encode()).hexdigest()
+    return key
 
 
 def cache_root():
     return sources.cache_root()
 
 
-def kernel_base_key(hardware, device, cache):
-    """Same key before and after source checkout; external modules are separate.
+def kernel_base_inputs(hardware, device, cache):
+    """Same inputs before and after source checkout; external modules are separate.
 
-    The base is per platform, so devices of one platform share it.
+    The base is per platform, so devices of one platform share it. Patches are
+    represented by the resulting source tree, so neither other platforms' patch
+    layers nor documentation next to the config select a new base.
     """
     platform = kernels.layout(hardware, device)[0]
-    tree = kernels.source_tree(hardware, cache, device)
-    recipes = recipe_key(hardware, [
-        'kernel/upstream.lock', 'kernel/configs/' + platform, 'kernel/series/' + platform,
-        'kernel/series.py', 'kernel/patches',
-        'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
+    recipes = recipe_entries(hardware, [
+        'kernel/upstream.lock', 'kernel/configs/' + platform + '/config', 'kernel/series/' + platform,
+        'kernel/series.py', 'kernel/build', 'kernel/Containerfile', 'kernel/install-toolchain',
         'kernel/stage-modules.py', 'buildenv.py',
     ])
-    # Source preparation is already represented by its resulting tree. Hash
-    # only the binary/SDK producer, not unrelated functions in kernel.py.
-    producer = hashlib.sha256(inspect.getsource(_BASE_PRODUCER).encode()).hexdigest()
-    sdk = digest(Path(__file__).with_name('kernel_sdk.py'))
-    mode = os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', '')
-    return hashlib.sha256((recipes + producer + sdk + tree + mode).encode()).hexdigest()
+    # Hash only the binary/SDK producer, not unrelated functions in kernel.py.
+    return {
+        'platform': platform,
+        'recipes': recipes,
+        'producer': hashlib.sha256(inspect.getsource(_BASE_PRODUCER).encode()).hexdigest(),
+        'sdk': digest(Path(__file__).with_name('kernel_sdk.py')),
+        'tree': kernels.source_tree(hardware, cache, device),
+        'mode': os.environ.get('ORCHARD_BUILD_NATIVE', '0') + ':' + os.environ.get('ORCHARD_BUILD_ENV_ID', ''),
+    }
+
+
+def kernel_base_key(hardware, device, cache):
+    return keyed(lambda: kernel_base_inputs(hardware, device, cache))()
+
+
+def kernel_inputs(hardware, device, base_key):
+    """Device layer: DTB selection and external drivers, reusing the compiled base.
+
+    Only device.toml's [kernel] selection matters here, not feature states or caveats.
+    """
+    platform, dtb = kernels.layout(hardware, device)
+    return {
+        'base': base_key, 'platform': platform, 'dtb': dtb,
+        'recipes': recipe_entries(hardware, ['kernel/modules/' + device, 'kernel/build-modules',
+                                             'kernel/stage-modules.py']),
+    }
 
 
 def kernel_key(hardware, device, base_key):
-    """Device layer: DTB selection and external drivers, reusing the compiled base."""
-    recipes = recipe_key(hardware, ['devices/' + device + '/device.toml', 'kernel/modules/' + device,
-                                    'kernel/build-modules', 'kernel/stage-modules.py'])
-    return hashlib.sha256((base_key + recipes).encode()).hexdigest()
+    return keyed(lambda: kernel_inputs(hardware, device, base_key))()
 
 
 _HELD_LOCKS = set()
@@ -150,13 +184,40 @@ def component_lock(cache):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+INPUTS_RECORD = 'key-inputs.json'
+
+
+def _flatten(value, prefix=''):
+    if not isinstance(value, dict):
+        return {prefix: value}
+    flat = {}
+    for name, item in value.items():
+        flat.update(_flatten(item, f'{prefix}.{name}' if prefix else name))
+    return flat
+
+
+def explain_miss(parent, inputs):
+    """Inputs that differ from the newest recorded entry of this component, or None."""
+    records = sorted((p for p in parent.glob('*/' + INPUTS_RECORD) if not p.parent.name.startswith('build-')),
+                     key=lambda p: p.stat().st_mtime)
+    if not records:
+        return None
+    previous = _flatten(json.loads(records[-1].read_text()))
+    current = _flatten(inputs)
+    changed = sorted(name for name in previous.keys() | current.keys()
+                     if previous.get(name) != current.get(name))
+    return records[-1].parent.name, changed
+
+
 def cached_component(cache, name, key, produce):
     """Immutable component directories, checked before reuse and publication.
-    Call under component_lock when building into the same cache.
+    Call under component_lock when building into the same cache. A key made by
+    keyed() also records its inputs, so later misses can say what changed.
     """
     parent = cache / name
     parent.mkdir(parents=True, exist_ok=True)
     initial_key = key()
+    inputs = getattr(key, 'inputs', None)
     target = parent / initial_key
     if target.exists():
         records = json.loads((target / 'component.json').read_text())
@@ -171,10 +232,18 @@ def cached_component(cache, name, key, produce):
         print(f'Reusing {name}: {target}', flush=True)
         return target
     print(f'Building {name} (cache miss): {target}', flush=True)
+    if inputs is not None:
+        reason = explain_miss(parent, inputs)
+        if reason:
+            previous, changed = reason
+            shown = ', '.join(changed[:8]) + (f' and {len(changed) - 8} more' if len(changed) > 8 else '')
+            print(f'  differs from newest cached {previous[:12]} in: {shown}', flush=True)
     with tempfile.TemporaryDirectory(prefix='build-', dir=parent) as temporary:
         stage = Path(temporary) / 'component'
         stage.mkdir()
         produce(stage)
+        if inputs is not None:
+            (stage / INPUTS_RECORD).write_text(json.dumps(inputs, indent=2, sort_keys=True) + '\n')
         records = {str(p.relative_to(stage)): digest(p) for p in sorted(stage.rglob('*')) if p.is_file()}
         (stage / 'component.json').write_text(json.dumps(records, indent=2) + '\n')
         if key() != initial_key:
@@ -211,7 +280,7 @@ def _prepare_kernel(hardware, cache, device):
     """Resolve one coherent kernel/DTB/module bundle under the component lock."""
     components = cache / 'components-v2'
     platform = kernels.layout(hardware, device)[0]
-    base_key = lambda: kernel_base_key(hardware, device, cache)
+    base_key = keyed(lambda: kernel_base_inputs(hardware, device, cache))
     def produce_base(stage):
         with kernels.tree_lock(hardware, device):
             kernels.build_base(hardware, cache, device, stage / 'kernel')
@@ -220,7 +289,7 @@ def _prepare_kernel(hardware, cache, device):
         with kernels.tree_lock(hardware, device):
             kernels.build_device(hardware, cache, device, base, stage / 'kernel')
     directory = cached_component(components, 'kernel-' + device,
-        lambda: kernel_key(hardware, device, base.parent.name), produce_kernel)
+        keyed(lambda: kernel_inputs(hardware, device, base.parent.name)), produce_kernel)
     return directory / 'kernel'
 
 
