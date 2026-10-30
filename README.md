@@ -3,7 +3,7 @@
 > **Moved.** The CLI now lives in [OrchardLinux/orchard](https://github.com/OrchardLinux/orchard),
 > together with the hardware support, in `src/orchard/`. Its history, including every
 > commit of this repository, is preserved there. This repository is archived; its
-> releases stay available, and the instructions below install the released 0.1.11.
+> releases stay available, and the instructions below install the released 0.1.10.
 
 Host-side tools for installing, booting, and debugging Linux on supported Apple devices.
 
