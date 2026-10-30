@@ -90,8 +90,10 @@ def patch_identity(hardware, device):
     """Ordered series patches and the marker kernel/build writes for them."""
     kernel = Path(hardware).resolve() / 'kernel'
     patches = [Path(line) for line in _series(hardware, device).splitlines() if line]
-    marker = b''.join(subprocess.check_output(['git', 'hash-object', str(p)]).strip() +
-                      b' ' + str(p.resolve().relative_to(kernel)).encode() + b'\n' for p in patches)
+    # One git process for the series; it prints the hashes in argument order.
+    hashes = subprocess.check_output(['git', 'hash-object', *map(str, patches)]).split() if patches else []
+    marker = b''.join(object_id + b' ' + str(p.resolve().relative_to(kernel)).encode() + b'\n'
+                      for object_id, p in zip(hashes, patches))
     return patches, marker
 
 
