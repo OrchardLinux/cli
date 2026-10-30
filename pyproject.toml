@@ -9,8 +9,8 @@ description = "Apple device Linux boot and installation tooling"
 readme = "README.md"
 license = "GPL-2.0-or-later AND MIT"
 license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
-requires-python = ">=3.9"
-dependencies = ["orchard-hardware>=0.1.11,<0.2", "jsonschema>=4.25,<5", "tomli>=2; python_version < '3.11'"]
+requires-python = ">=3.11"
+dependencies = ["orchard-hardware>=0.1.11,<0.2", "jsonschema>=4.25,<5"]
 
 [project.urls]
 Repository = "https://github.com/OrchardLinux/cli"
@@ -34,7 +34,7 @@ orchard_cli_schemas = ["v1/*.json"]
 dev = ["mypy==1.18.2"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 mypy_path = "src"
 files = ["src/orchard_cli/contracts.py", "src/orchard_cli/devices.py", "src/orchard_cli/apple/device.py", "src/orchard_cli/service.py", "src/orchard_cli/command.py", "tests/typecheck_adapter.py"]
 check_untyped_defs = true

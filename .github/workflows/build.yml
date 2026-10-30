@@ -31,7 +31,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14'
       # Hardware 0.1.11 is required by the CLI but has not been released yet.
       # Development checks use a fixed upstream revision until it is published.
       - name: Check out pinned hardware source for development checks
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python: ['3.9', '3.12']
+        python: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,7 +132,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14'
       - uses: actions/download-artifact@v4
         with:
           name: cli-wheel-pair

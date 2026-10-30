@@ -7,10 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
 
 from orchard_hardware import device as hardware_device
 from .cache import cache_root
