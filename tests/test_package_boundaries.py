@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from orchard_cli import firmware
-from orchard_cli.apple import usb, ipsw
+from orchard_cli.apple import usb
 from orchard_cli.progress import Clock
 from orchard_cli.state import DeviceState
 
@@ -35,11 +35,11 @@ class NoBoard(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoBoard())
 from orchard_cli import downloads, firmware, http, integrity
 from orchard_cli.transports import ssh
-from orchard_cli.apple import adt_tree, adt_capture, macho, osserialize, ipsw, usb, boot
+from orchard_cli.apple import adt_tree, adt_capture, macho, osserialize, remote_ipsw, udif, apfs, lzfse, usb, boot
 from orchard_hardware.apple import adt
 from orchard_cli.command import main
 sys.argv=['orchard','distros'];main()
-sys.argv=['orchard','resolve',MANIFEST];main()
+sys.argv=['orchard','resolve',MANIFEST,'--profile','j71b'];main()
 '''.replace('MANIFEST', repr(str(FIXTURE.resolve())))
         with tempfile.TemporaryDirectory() as store:
             result = subprocess.run([sys.executable, '-I', '-c', script], cwd=store,
