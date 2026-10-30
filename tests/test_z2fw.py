@@ -82,6 +82,12 @@ def mtprops_fixture(boot_timeout=True):
         'Firmware Config': config}})
 
 
+def gen1_fixture():
+    """Legacy data-form mtprops; eight synthetic payload bytes, full word count."""
+    return {'PreconstructedBootloadPacketType': 'Z2', 'Constructed Firmware':
+            bytes.fromhex('18e13001' '0002' '00000000' '0002' '0100030205040706' '001c0000')}
+
+
 def convert_packets(data, packet='TESTPKT'):
     profile = plistlib.loads(data)['TEST,2']
     return z2fw.convert_packets(profile, apple_xml(profile['Firmware Config']), packet=packet)
@@ -207,6 +213,63 @@ class PacketArrayConversion(unittest.TestCase):
             z2fw.convert_packets(profile, apple_xml(profile['Firmware Config']), packet='TESTPKT')
 
 
+class Gen1Conversion(unittest.TestCase):
+    def convert(self, profile=None, **kwargs):
+        return z2fw.convert_gen1(gen1_fixture() if profile is None else profile,
+                                 **({'packet': 'Z2', 'touch_maximum': 1024, 'prox_maximum': 128,
+                                     'fll_mval': 6099, 'ref_clk_div': 2, 'clk32_clock_enable': 1} | kwargs))
+
+    def test_corellium_gen1_sequence_preserves_wire_bytes_and_dynamic_calibration(self):
+        output, info = self.convert()
+        exchange = bytes.fromhex('1aa118e118e118e118e118e118e118e1')
+        records = z2fw.decode_container(output)
+        self.assertEqual(records, [
+            (z2fw.INIT, bytes.fromhex('19c1')),
+            (z2fw.INIT, exchange), (z2fw.INIT, exchange), (z2fw.INIT, exchange),
+            (z2fw.CALIBRATION, struct.pack('<III', 0x10009600, 128, 9)),
+            (z2fw.CALIBRATION, struct.pack('<III', 0x10009000, 1024, 0)),
+            (z2fw.SEND, gen1_fixture()['Constructed Firmware']),
+            (z2fw.SEND, bytes.fromhex('1e3330601000ffffffff17d300000586')),
+            (z2fw.SEND, bytes.fromhex('1e33305c1000ffffffff00020000049a')),
+            (z2fw.SEND, bytes.fromhex('1e3330581000ffffffff00060000049a')),
+            (z2fw.SEND, bytes.fromhex('1e3330001000ffffffff00030000043f')),
+            (z2fw.SEND, bytes.fromhex('1e3335181000ffffffff00010000045a')),
+            (z2fw.SEND, bytes.fromhex('1f01')),
+            (z2fw.INIT, bytes.fromhex('1d5334001000000100000045')),
+        ])
+        self.assertEqual(info['command_sequence'], [0, 0, 0, 0, 6, 6, 1, 1, 1, 1, 1, 1, 1, 0])
+        self.assertEqual((info['firmware_address'], info['firmware_payload_bytes']), (0, 8))
+        self.assertEqual(z2fw.decode_blob(records[6][1], hbpp_version=0x103), (0, bytes(range(8))))
+        # A legacy full word count must fail the HBPP14 length check.
+        with self.assertRaisesRegex(ValueError, 'length mismatch'):
+            z2fw.decode_blob(records[6][1])
+
+    def test_board_clock_policy_preserves_zero_overrides(self):
+        records = z2fw.decode_container(self.convert(ref_clk_div=0, clk32_clock_enable=0)[0])
+        self.assertEqual(records[8], (z2fw.SEND, bytes.fromhex('1e33305c1000ffffffff000000000498')))
+        self.assertEqual(records[11], (z2fw.SEND, bytes.fromhex('1e3335181000ffffffff000000000459')))
+
+    def test_rejects_wrong_input_forms_bad_packets_and_overlapping_calibration(self):
+        for profile, message in (
+                (gen1_fixture() | {'Constructed Firmware': [b'packet']}, 'data-form Gen1'),
+                (gen1_fixture() | {'Firmware Config': b'config'}, 'unsupported config'),
+                (gen1_fixture() | {'Constructed Firmware': gen1_fixture()['Constructed Firmware'][:-1]},
+                 'length mismatch'),
+                (gen1_fixture() | {'Constructed Firmware': gen1_fixture()['Constructed Firmware'][:-1] + b'\1'},
+                 'payload checksum')):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                self.convert(profile)
+        for kwargs, message in (({'packet': 'K1HBPP14'}, 'packet type'),
+                                ({'touch_maximum': 0x604}, 'Overlapping'),
+                                ({'prox_maximum': 0}, 'Empty calibration'),
+                                ({'touch_maximum': True}, 'Boolean'),
+                                ({'fll_mval': -1}, 'out of bounds'),
+                                ({'ref_clk_div': True}, 'Boolean'),
+                                ({'clk32_clock_enable': 0x100000000}, 'out of bounds')):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
+                self.convert(**kwargs)
+
+
 class RecipeSteps(unittest.TestCase):
     def document(self, steps, data, output):
         return {
@@ -232,6 +295,20 @@ class RecipeSteps(unittest.TestCase):
         steps = [{'step': 'z2fw-from-mtprops@2', 'input': 'touch', 'profile': 'TEST,2', 'packet': 'TESTPKT'}]
         document = recipe.supported(self.document(steps, data, output))
         self.assertEqual(recipe.run(document, lambda name: data), {'lib/firmware/apple/touch.z2fw': output})
+
+    def test_mtprops_gen1_step_uses_board_calibration_bounds(self):
+        profile = gen1_fixture()
+        data = plistlib.dumps({'TEST,1': profile})
+        output, _ = z2fw.convert_gen1(profile, packet='Z2', touch_maximum=1024, prox_maximum=128,
+                                     fll_mval=6099, ref_clk_div=0, clk32_clock_enable=0)
+        steps = [{'step': 'z2fw-from-mtprops@3', 'input': 'touch', 'profile': 'TEST,1', 'packet': 'Z2',
+                  'touch_maximum': 1024, 'prox_maximum': 128,
+                  'fll_mval': 6099, 'ref_clk_div': 0, 'clk32_clock_enable': 0}]
+        document = recipe.check(self.document(steps, data, output))
+        self.assertEqual(recipe.run(document, lambda name: data), {'lib/firmware/apple/touch.z2fw': output})
+        for field in ('touch_maximum', 'prox_maximum', 'fll_mval', 'ref_clk_div', 'clk32_clock_enable'):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'must be int'):
+                recipe.supported(self.document([steps[0] | {field: True}], data, output))
 
     def test_parameter_types_are_checked(self):
         for step in ({'step': 'z2fw-from-mtfw@1', 'input': 'touch', 'profile': 'TEST,6', 'otp_preflight': 1},

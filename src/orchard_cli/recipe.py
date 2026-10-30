@@ -63,6 +63,14 @@ def _z2fw_packets(step, data, expected):
     return output
 
 
+def _z2fw_gen1(step, data, expected):
+    output, _ = z2fw.convert_gen1(_touch_profile(data, step['profile']), packet=step['packet'],
+                                 touch_maximum=step['touch_maximum'], prox_maximum=step['prox_maximum'],
+                                 fll_mval=step['fll_mval'], ref_clk_div=step['ref_clk_div'],
+                                 clk32_clock_enable=step['clk32_clock_enable'])
+    return output
+
+
 def _z2fw_mtfw(step, data, expected):
     output, _ = z2fw.convert_mtfw(apple_xml(data), step['profile'], otp_preflight=step['otp_preflight'])
     return output
@@ -86,6 +94,10 @@ STEPS = {
                                            'calibration_size': int}),
     # mtprops with an array of preconstructed packets (iPhone 7 Plus), makez2fw's layout.
     'z2fw-from-mtprops@2': (_z2fw_packets, {'profile': str, 'packet': str}),
+    # Legacy Gen1 data-form mtprops (iPhone 6), Corellium's bootstrap and board calibration bounds.
+    'z2fw-from-mtprops@3': (_z2fw_gen1, {'profile': str, 'packet': str,
+                                      'touch_maximum': int, 'prox_maximum': int,
+                                      'fll_mval': int, 'ref_clk_div': int, 'clk32_clock_enable': int}),
     # MTFW (IM4P payload) with HBPP load items per personality (iPad 7), makez2fw's layout.
     'z2fw-from-mtfw@1': (_z2fw_mtfw, {'profile': str, 'otp_preflight': bool}),
 }
